@@ -27,11 +27,6 @@ const FAMILY_COLORS = [
   "#c98f16", "#3f9aa3", "#b0567f", "#6b7280",
 ];
 
-// The shared password. Change this to whatever you want, then re-deploy.
-const SHARED_PASSWORD = "esteem";
-// Row id in the Supabase table that holds the whole shared calendar.
-const DOC_ID = "main";
-
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -49,27 +44,82 @@ export default function CarpoolApp() {
     try { document.body.style.background = C.paper; } catch {}
   }, [C.paper]);
 
-  // ── Password gate (per-device) ───────────────────────────────
-  // "Remember me" stores unlock on THIS device only (localStorage).
-  // It never affects anyone else — each person decides for their own phone.
-  const [unlocked, setUnlocked] = useState(() => {
-    try { return localStorage.getItem("ivs_remember") === "1"; } catch { return false; }
-  });
-  const [pw, setPw] = useState("");
-  const [pwError, setPwError] = useState(false);
+  // ── Carpool gate ─────────────────────────────────────────────
+  // Each carpool is its own Supabase row keyed by a slug of its name.
+  // People create a new carpool or join an existing one by name + password.
+  const slugify = (str) => "cp-" + str.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  const [carpoolId, setCarpoolId] = useState(null);   // slug of the active carpool, or null
+  const [carpoolName, setCarpoolName] = useState(""); // display name of the active carpool
+  const [mode, setMode] = useState("choose");         // choose | create | join
+  const [cpNameInput, setCpNameInput] = useState("");
+  const [cpPwInput, setCpPwInput] = useState("");
+  const [gateError, setGateError] = useState("");
+  const [gateBusy, setGateBusy] = useState(false);
   const [remember, setRemember] = useState(true);
-  const tryUnlock = () => {
-    if (pw === SHARED_PASSWORD) {
-      setUnlocked(true); setPwError(false);
-      try {
-        if (remember) localStorage.setItem("ivs_remember", "1");
-        else localStorage.removeItem("ivs_remember");
-      } catch {}
-    } else { setPwError(true); }
+
+  // Try to auto-rejoin a remembered carpool on this device.
+  useEffect(() => {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem("ivs_carpool") || "null"); } catch {}
+    if (saved && saved.id) {
+      setCarpoolId(saved.id);
+      setCarpoolName(saved.name || "");
+    }
+  }, []);
+
+  const rememberCarpool = (id, name) => {
+    try {
+      if (remember) localStorage.setItem("ivs_carpool", JSON.stringify({ id, name }));
+      else localStorage.removeItem("ivs_carpool");
+    } catch {}
   };
-  const forgetDevice = () => {
-    try { localStorage.removeItem("ivs_remember"); } catch {}
-    setUnlocked(false); setPw("");
+
+  const createCarpool = async () => {
+    const name = cpNameInput.trim();
+    const pass = cpPwInput.trim();
+    if (!name) { setGateError("Give your carpool a name."); return; }
+    if (pass.length < 3) { setGateError("Choose a password (at least 3 characters)."); return; }
+    const id = slugify(name);
+    if (!id || id === "cp-") { setGateError("Please use letters or numbers in the name."); return; }
+    setGateBusy(true); setGateError("");
+    try {
+      const { data: existing } = await supabase.from("carpool").select("id").eq("id", id).maybeSingle();
+      if (existing) { setGateError("A carpool with that name already exists. Try Join, or pick a different name."); setGateBusy(false); return; }
+      const fresh = { name, password: pass, families: [], shifts: [], schoolDaysOnly: true };
+      const { error } = await supabase.from("carpool").upsert({ id, payload: fresh, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      setData(fresh); setCarpoolName(name); setCarpoolId(id);
+      rememberCarpool(id, name);
+    } catch (e) {
+      console.error(e); setGateError("Couldn't create the carpool — check your connection and try again.");
+    }
+    setGateBusy(false);
+  };
+
+  const joinCarpool = async () => {
+    const name = cpNameInput.trim();
+    const pass = cpPwInput.trim();
+    if (!name || !pass) { setGateError("Enter the carpool name and password."); return; }
+    const id = slugify(name);
+    setGateBusy(true); setGateError("");
+    try {
+      const { data: row } = await supabase.from("carpool").select("payload").eq("id", id).maybeSingle();
+      if (!row || !row.payload) { setGateError("No carpool found with that name. Check the spelling, or Create it."); setGateBusy(false); return; }
+      if ((row.payload.password || "") !== pass) { setGateError("That password doesn't match this carpool."); setGateBusy(false); return; }
+      setData(row.payload); setCarpoolName(row.payload.name || name); setCarpoolId(id);
+      rememberCarpool(id, row.payload.name || name);
+    } catch (e) {
+      console.error(e); setGateError("Couldn't reach the carpool — check your connection and try again.");
+    }
+    setGateBusy(false);
+  };
+
+  const leaveCarpool = () => {
+    try { localStorage.removeItem("ivs_carpool"); } catch {}
+    setCarpoolId(null); setCarpoolName(""); setMode("choose");
+    setCpNameInput(""); setCpPwInput(""); setGateError("");
+    setData({ families: [], shifts: [], schoolDaysOnly: true });
+    setMe(null); setLoaded(false);
   };
 
   const [loaded, setLoaded] = useState(false);
@@ -93,11 +143,12 @@ export default function CarpoolApp() {
   const [draft, setDraft] = useState(null);
   const [expandedFam, setExpandedFam] = useState(null); // which other family is expanded in the rider picker
 
-  // ── Shared state via Supabase ────────────────────────────────
+  // ── Shared state via Supabase (scoped to the active carpool) ─
   const load = useCallback(async () => {
+    if (!carpoolId) return;
     try {
       const { data: row, error } = await supabase
-        .from("carpool").select("payload").eq("id", DOC_ID).maybeSingle();
+        .from("carpool").select("payload").eq("id", carpoolId).maybeSingle();
       if (error) throw error;
       if (row && row.payload) setData((prev) => ({ ...prev, ...row.payload }));
       setConnError(false);
@@ -106,29 +157,31 @@ export default function CarpoolApp() {
       setConnError(true);
     }
     setLoaded(true);
-  }, []);
+  }, [carpoolId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (carpoolId) load(); }, [carpoolId, load]);
 
-  // Live updates: refresh when anyone else saves, plus a slow poll as backup.
+  // Live updates: refresh when anyone else in THIS carpool saves.
   useEffect(() => {
+    if (!carpoolId) return;
     const channel = supabase
-      .channel("carpool-changes")
+      .channel("carpool-" + carpoolId)
       .on("postgres_changes",
-        { event: "*", schema: "public", table: "carpool", filter: `id=eq.${DOC_ID}` },
+        { event: "*", schema: "public", table: "carpool", filter: `id=eq.${carpoolId}` },
         (payload) => { if (payload.new && payload.new.payload) setData((p) => ({ ...p, ...payload.new.payload })); }
       )
       .subscribe();
     const t = setInterval(load, 8000);
     return () => { supabase.removeChannel(channel); clearInterval(t); };
-  }, [load]);
+  }, [carpoolId, load]);
 
   const persist = async (next) => {
+    if (!carpoolId) return;
     setData(next); setSaving(true);
     try {
       const { error } = await supabase
         .from("carpool")
-        .upsert({ id: DOC_ID, payload: next, updated_at: new Date().toISOString() });
+        .upsert({ id: carpoolId, payload: next, updated_at: new Date().toISOString() });
       if (error) throw error;
       setConnError(false);
     } catch (e) {
@@ -377,9 +430,9 @@ export default function CarpoolApp() {
   const [invited, setInvited] = useState(false);
   const shareInvite = async () => {
     const link = window.location.origin + window.location.pathname;
-    const text = `Join our IVS Carpool calendar:\n${link}\nPassword: ${SHARED_PASSWORD}`;
+    const text = `Join our IVS Carpool: "${carpoolName}"\nOpen ${link}, tap "Join a carpool", and enter:\nCarpool name: ${carpoolName}\nPassword: ${data.password || ""}`;
     try {
-      if (navigator.share) { await navigator.share({ title: "IVS Carpool", text }); return; }
+      if (navigator.share) { await navigator.share({ title: "IVS Carpool — " + carpoolName, text }); return; }
       await navigator.clipboard.writeText(text);
       setInvited(true); setTimeout(() => setInvited(false), 2200);
     } catch (e) {
@@ -387,32 +440,64 @@ export default function CarpoolApp() {
     }
   };
 
-  // ── Password screen ──────────────────────────────────────────
-  if (!unlocked) {
+  // ── Carpool entry screen (create or join) ───────────────────
+  if (!carpoolId) {
+    const labelStyle = { display: "block", fontSize: 12.5, fontWeight: 700, color: C.slate, marginBottom: 5 };
+    const fieldWrap = { textAlign: "left", marginBottom: 12 };
     return (
       <div style={{ ...S.wrap, alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <div style={{ ...S.panel, maxWidth: 380, width: "100%", textAlign: "center" }}>
+        <div style={{ ...S.panel, maxWidth: 400, width: "100%", textAlign: "center" }}>
           <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
-            <img src="/logo.png" alt="Ice Vision Solutions" width={96} height={96}
-              style={{ borderRadius: 20, boxShadow: "0 6px 20px rgba(23,63,95,0.25)" }} />
+            <img src="/logo.png" alt="Ice Vision Solutions" width={88} height={88}
+              style={{ borderRadius: 18, boxShadow: "0 6px 20px rgba(23,63,95,0.25)" }} />
           </div>
           <h1 style={{ margin: "0 0 2px", fontSize: 24, fontWeight: 800, color: C.ink }}>IVS Carpool</h1>
-          <p style={{ color: C.brand, margin: "0 0 14px", fontSize: 12.5, fontWeight: 700, letterSpacing: ".04em" }}>ICE VISION SOLUTIONS</p>
-          <p style={{ color: C.fog, margin: "0 0 18px", fontSize: 14 }}>Enter the shared password to open the calendar.</p>
-          <input type="password" value={pw} autoFocus
-            onChange={(e) => { setPw(e.target.value); setPwError(false); }}
-            onKeyDown={(e) => e.key === "Enter" && tryUnlock()}
-            placeholder="Password"
-            style={{ ...S.input, width: "100%", boxSizing: "border-box", marginBottom: 10, textAlign: "center" }} />
-          {pwError && <p style={{ color: C.warn, fontSize: 13, margin: "0 0 10px" }}>That password didn't match. Try again.</p>}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", cursor: "pointer", margin: "0 0 14px", color: C.slate, fontSize: 14 }}>
-            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-            Remember me on this device
-          </label>
-          <button onClick={tryUnlock} style={{ ...S.primaryBtn, width: "100%", background: C.go }}>Open calendar</button>
-          <p style={{ color: C.fog, fontSize: 11.5, margin: "10px 0 0" }}>
-            "Remember me" skips the password next time on <em>this</em> device only. It doesn't change anything for anyone else.
-          </p>
+          <p style={{ color: C.brand, margin: "0 0 18px", fontSize: 12.5, fontWeight: 700, letterSpacing: ".04em" }}>ICE VISION SOLUTIONS</p>
+
+          {mode === "choose" && (
+            <>
+              <p style={{ color: C.fog, margin: "0 0 18px", fontSize: 14 }}>Start a new carpool for your group, or join one you were invited to.</p>
+              <button onClick={() => { setMode("create"); setGateError(""); }} style={{ ...S.primaryBtn, width: "100%", background: C.go, marginBottom: 10 }}>Create a carpool</button>
+              <button onClick={() => { setMode("join"); setGateError(""); }} style={{ ...S.ghostBtn, width: "100%", boxSizing: "border-box" }}>Join an existing carpool</button>
+            </>
+          )}
+
+          {(mode === "create" || mode === "join") && (
+            <>
+              <p style={{ color: C.fog, margin: "0 0 16px", fontSize: 14 }}>
+                {mode === "create"
+                  ? "Name your carpool and set a password. You'll share both with your families."
+                  : "Enter the carpool name and password exactly as they were shared with you."}
+              </p>
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Carpool name</label>
+                <input type="text" value={cpNameInput} autoFocus
+                  onChange={(e) => { setCpNameInput(e.target.value); setGateError(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && (mode === "create" ? createCarpool() : joinCarpool())}
+                  placeholder="e.g. Lincoln Elementary Group"
+                  style={{ ...S.input, width: "100%", boxSizing: "border-box" }} />
+              </div>
+              <div style={fieldWrap}>
+                <label style={labelStyle}>{mode === "create" ? "Create a password" : "Password"}</label>
+                <input type="password" value={cpPwInput}
+                  onChange={(e) => { setCpPwInput(e.target.value); setGateError(""); }}
+                  onKeyDown={(e) => e.key === "Enter" && (mode === "create" ? createCarpool() : joinCarpool())}
+                  placeholder={mode === "create" ? "Members will need this to join" : "The carpool's password"}
+                  style={{ ...S.input, width: "100%", boxSizing: "border-box" }} />
+              </div>
+              {gateError && <p style={{ color: C.warn, fontSize: 13, margin: "0 0 10px", textAlign: "left" }}>{gateError}</p>}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", margin: "2px 0 14px", color: C.slate, fontSize: 13.5 }}>
+                <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                Remember this carpool on my device
+              </label>
+              <button onClick={mode === "create" ? createCarpool : joinCarpool} disabled={gateBusy}
+                style={{ ...S.primaryBtn, width: "100%", background: C.go, opacity: gateBusy ? 0.6 : 1 }}>
+                {gateBusy ? (mode === "create" ? "Creating…" : "Joining…") : (mode === "create" ? "Create & open" : "Join carpool")}
+              </button>
+              <button onClick={() => { setMode("choose"); setGateError(""); setCpNameInput(""); setCpPwInput(""); }}
+                style={{ ...S.ghostBtn, width: "100%", marginTop: 8, boxSizing: "border-box" }}>← Back</button>
+            </>
+          )}
         </div>
       </div>
     );
@@ -420,7 +505,7 @@ export default function CarpoolApp() {
 
   if (!loaded) {
     return <div style={{ ...S.wrap, alignItems: "center", justifyContent: "center", minHeight: 300 }}>
-      <span style={{ color: C.fog }}>Loading the shared calendar…</span>
+      <span style={{ color: C.fog }}>Loading {carpoolName || "your carpool"}…</span>
     </div>;
   }
   const editWd = editDate ? parse(editDate).getDay() : null;
@@ -446,7 +531,7 @@ export default function CarpoolApp() {
             style={{ borderRadius: 11, boxShadow: "0 2px 8px rgba(23,63,95,0.2)", flexShrink: 0 }} />
           <div style={{ lineHeight: 1.1 }}>
             <h1 style={{ margin: 0, fontSize: 27, letterSpacing: "-0.02em", color: C.ink, fontWeight: 800 }}>IVS Carpool</h1>
-            <span style={{ fontSize: 11, color: C.brand, fontWeight: 700, letterSpacing: ".05em" }}>ICE VISION SOLUTIONS</span>
+            <span style={{ fontSize: 11, color: C.brand, fontWeight: 700, letterSpacing: ".05em" }}>{carpoolName || "ICE VISION SOLUTIONS"}</span>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
             <button className="cp-btn" onClick={toggleDark} title="Toggle dark mode"
@@ -615,9 +700,9 @@ export default function CarpoolApp() {
             style={{ ...S.navBtnSm, background: invited ? C.goSoft : C.card, color: invited ? C.go : C.slate, borderColor: invited ? C.go : C.line }}>
             {invited ? "Copied ✓" : "Invite"}
           </button>
-          <button className="cp-btn" onClick={forgetDevice} title="Require the password again on this device"
-            style={{ ...S.navBtnSm }}>
-            🔒 Lock this device
+          <button className="cp-btn" onClick={() => { if (confirm("Leave this carpool on this device? You'll need the name and password to get back in.")) leaveCarpool(); }}
+            title="Switch to a different carpool" style={{ ...S.navBtnSm }}>
+            ⇄ Switch carpool
           </button>
         </div>
       </div>

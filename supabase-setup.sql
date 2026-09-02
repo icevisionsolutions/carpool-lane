@@ -1,23 +1,19 @@
 -- ============================================================
---  The Carpool Lane — Supabase setup
+--  IVS Carpool — Supabase setup
 --  Run this ONCE in your Supabase project:
 --  Supabase dashboard → SQL Editor → New query → paste → Run.
 -- ============================================================
 
--- 1. Table that stores the whole shared calendar as one JSON blob.
+-- 1. Table that stores every carpool. Each carpool is one row:
+--    id = a slug of the carpool's name, payload = its whole calendar.
 create table if not exists carpool (
   id text primary key,
   payload jsonb not null default '{}',
   updated_at timestamptz not null default now()
 );
 
--- 2. Seed the single shared row the app reads/writes.
-insert into carpool (id, payload)
-values ('main', '{"families":[],"shifts":[],"schoolDaysOnly":true}')
-on conflict (id) do nothing;
-
--- 3. Turn on Row Level Security, then allow read + write.
---    (The app is already protected by your shared password in the UI.)
+-- 2. Row Level Security on, with open read/write.
+--    Each carpool is protected by its own name + password inside the app.
 alter table carpool enable row level security;
 
 create policy "anyone can read carpool"
@@ -29,5 +25,5 @@ create policy "anyone can insert carpool"
 create policy "anyone can update carpool"
   on carpool for update using (true) with check (true);
 
--- 4. Let realtime broadcast changes so families see updates live.
+-- 3. Let realtime broadcast changes so members see updates live.
 alter publication supabase_realtime add table carpool;

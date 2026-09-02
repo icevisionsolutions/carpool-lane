@@ -88,25 +88,22 @@ shows in the header, the password screen, and the browser tab. To swap it
 later, replace that file with a new `logo.png` (a square image works best) and
 commit the change — Vercel redeploys automatically.
 
-## The password
+## How carpools work
 
-The app asks for a shared password before showing the calendar. The default is:
+There's no single shared password anymore. Each group runs its own carpool:
 
-    esteem
+- **Create a carpool** — the first person names the carpool and sets a
+  password, then shares both with their families.
+- **Join a carpool** — everyone else picks "Join an existing carpool" and
+  enters that same name and password.
 
-**To change it:** open `src/CarpoolApp.jsx`, find the line near the top:
+Each carpool is completely separate — its own families, calendar, cars, and
+riders. One person can run many carpools; families only see the one they
+joined. The **Invite** button inside a carpool copies a ready-to-send message
+with the carpool name and password.
 
-    const SHARED_PASSWORD = "esteem";
+There's nothing to configure in the code for this — no password to edit.
 
-Change it to whatever you like, commit the change on GitHub (edit the file
-right in the browser — pencil icon → edit → Commit changes), and Vercel will
-automatically redeploy with the new password within a minute.
-
-> Note: this password keeps casual strangers out, but it's a light lock, not
-> bank-grade security. It's stored in the site's code. For 5 trusted families
-> that's the right amount of protection. Don't use it for anything sensitive.
-
----
 
 ## Making changes later
 
