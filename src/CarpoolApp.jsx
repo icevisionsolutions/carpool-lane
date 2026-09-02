@@ -49,23 +49,33 @@ export default function CarpoolApp() {
     try { document.body.style.background = C.paper; } catch {}
   }, [C.paper]);
 
-  // ── Password gate ────────────────────────────────────────────
+  // ── Password gate (per-device) ───────────────────────────────
+  // "Remember me" stores unlock on THIS device only (localStorage).
+  // It never affects anyone else — each person decides for their own phone.
   const [unlocked, setUnlocked] = useState(() => {
-    try { return sessionStorage.getItem("cp_ok") === "1"; } catch { return false; }
+    try { return localStorage.getItem("ivs_remember") === "1"; } catch { return false; }
   });
   const [pw, setPw] = useState("");
   const [pwError, setPwError] = useState(false);
+  const [remember, setRemember] = useState(true);
   const tryUnlock = () => {
     if (pw === SHARED_PASSWORD) {
       setUnlocked(true); setPwError(false);
-      try { sessionStorage.setItem("cp_ok", "1"); } catch {}
+      try {
+        if (remember) localStorage.setItem("ivs_remember", "1");
+        else localStorage.removeItem("ivs_remember");
+      } catch {}
     } else { setPwError(true); }
+  };
+  const forgetDevice = () => {
+    try { localStorage.removeItem("ivs_remember"); } catch {}
+    setUnlocked(false); setPw("");
   };
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connError, setConnError] = useState(false);
-  const [data, setData] = useState({ families: [], shifts: [], schoolDaysOnly: true, passwordOff: false });
+  const [data, setData] = useState({ families: [], shifts: [], schoolDaysOnly: true });
   const [me, setMe] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [driverInput, setDriverInput] = useState("");
@@ -353,23 +363,8 @@ export default function CarpoolApp() {
     }
   };
 
-  const togglePassword = async () => {
-    const turningOff = !data.passwordOff;
-    const msg = turningOff
-      ? "Turn OFF the password for everyone? Anyone with the link will get straight in — no password needed."
-      : "Turn the password back ON for everyone?";
-    if (!confirm(msg)) return;
-    await persist({ ...data, passwordOff: turningOff });
-  };
-  const unlockAndDisable = async () => {
-    if (pw !== SHARED_PASSWORD) { setPwError(true); return; }
-    setUnlocked(true); setPwError(false);
-    try { sessionStorage.setItem("cp_ok", "1"); } catch {}
-    await persist({ ...data, passwordOff: true });
-  };
-
   // ── Password screen ──────────────────────────────────────────
-  if (!unlocked && !data.passwordOff) {
+  if (!unlocked) {
     return (
       <div style={{ ...S.wrap, alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
         <div style={{ ...S.panel, maxWidth: 380, width: "100%", textAlign: "center" }}>
@@ -386,12 +381,13 @@ export default function CarpoolApp() {
             placeholder="Password"
             style={{ ...S.input, width: "100%", boxSizing: "border-box", marginBottom: 10, textAlign: "center" }} />
           {pwError && <p style={{ color: C.warn, fontSize: 13, margin: "0 0 10px" }}>That password didn't match. Try again.</p>}
+          <label style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", cursor: "pointer", margin: "0 0 14px", color: C.slate, fontSize: 14 }}>
+            <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+            Remember me on this device
+          </label>
           <button onClick={tryUnlock} style={{ ...S.primaryBtn, width: "100%", background: C.go }}>Open calendar</button>
-          <button onClick={unlockAndDisable} style={{ ...S.ghostBtn, width: "100%", marginTop: 8, boxSizing: "border-box" }}>
-            Open &amp; turn password off for everyone
-          </button>
-          <p style={{ color: C.fog, fontSize: 11.5, margin: "8px 0 0" }}>
-            Turning it off means anyone with the link gets in without a password. You can turn it back on inside the app.
+          <p style={{ color: C.fog, fontSize: 11.5, margin: "10px 0 0" }}>
+            "Remember me" skips the password next time on <em>this</em> device only. It doesn't change anything for anyone else.
           </p>
         </div>
       </div>
@@ -595,9 +591,9 @@ export default function CarpoolApp() {
             style={{ ...S.navBtnSm, background: invited ? C.goSoft : C.card, color: invited ? C.go : C.slate, borderColor: invited ? C.go : C.line }}>
             {invited ? "Copied ✓" : "Invite"}
           </button>
-          <button className="cp-btn" onClick={togglePassword} title="Turn the shared password on or off for everyone"
-            style={{ ...S.navBtnSm, color: data.passwordOff ? C.warn : C.slate }}>
-            {data.passwordOff ? "🔓 Password off" : "🔒 Password on"}
+          <button className="cp-btn" onClick={forgetDevice} title="Require the password again on this device"
+            style={{ ...S.navBtnSm }}>
+            🔒 Lock this device
           </button>
         </div>
       </div>
