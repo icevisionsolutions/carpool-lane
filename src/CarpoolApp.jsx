@@ -91,6 +91,7 @@ export default function CarpoolApp() {
   const [viewDate, setViewDate] = useState(null);
   const [editDate, setEditDate] = useState(null);
   const [draft, setDraft] = useState(null);
+  const [expandedFam, setExpandedFam] = useState(null); // which other family is expanded in the rider picker
 
   // ── Shared state via Supabase ────────────────────────────────
   const load = useCallback(async () => {
@@ -220,6 +221,14 @@ export default function CarpoolApp() {
     await persist(next);
   };
   const memberById = (fam, memId) => membersOf(fam).find((m) => m.id === memId);
+  // Find a rider anywhere across all families; returns { member, family } or null.
+  const findMember = (memId) => {
+    for (const f of data.families) {
+      const m = membersOf(f).find((x) => x.id === memId);
+      if (m) return { member: m, family: f };
+    }
+    return null;
+  };
   const familyById = (id) => data.families.find((f) => f.id === id);
   const activeFamily = me ? familyById(me) : null;
 
@@ -243,8 +252,9 @@ export default function CarpoolApp() {
     const existing = myShiftOn(dateStr);
     setViewDate(null);
     setEditDate(dateStr);
-    setDraft(existing ? { ...existing, riders: existing.riders || [] }
-      : { type: "single", pickup: false, pickupTime: "", dropoff: false, dropoffTime: "", note: "", confirmed: false, vehicleId: null, riders: [], weekday: wd });
+    setExpandedFam(null);
+    setDraft(existing ? { ...existing, riders: existing.riders || [], pickupLoc: existing.pickupLoc || "", dropoffLoc: existing.dropoffLoc || "" }
+      : { type: "single", pickup: false, pickupTime: "", pickupLoc: "", dropoff: false, dropoffTime: "", dropoffLoc: "", note: "", confirmed: false, vehicleId: null, riders: [], weekday: wd });
   };
   const setD = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const clearMineFor = (dateStr, list) => {
@@ -265,8 +275,8 @@ export default function CarpoolApp() {
     const wd = parse(editDate).getDay();
     const base = {
       id: uid(), familyId: me,
-      pickup: draft.pickup, pickupTime: draft.pickupTime.trim(),
-      dropoff: draft.dropoff, dropoffTime: draft.dropoffTime.trim(),
+      pickup: draft.pickup, pickupTime: draft.pickupTime.trim(), pickupLoc: (draft.pickupLoc || "").trim(),
+      dropoff: draft.dropoff, dropoffTime: draft.dropoffTime.trim(), dropoffLoc: (draft.dropoffLoc || "").trim(),
       note: draft.note.trim(), confirmed: !!draft.confirmed, vehicleId: draft.vehicleId || null, riders: draft.riders || [],
     };
     const shift = draft.type === "weekly"
@@ -301,7 +311,13 @@ export default function CarpoolApp() {
     if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
     setView({ y, m }); setEditDate(null);
   };
-  const goToday = () => { setView({ y: now.getFullYear(), m: now.getMonth() }); setEditDate(null); };
+  const goToday = () => {
+    const t = new Date();
+    setView({ y: t.getFullYear(), m: t.getMonth() });
+    setTab("calendar");
+    setEditDate(null);
+    setViewDate(ymd(t));
+  };
   const todayStr = ymd(new Date());
   const isSchoolDay = (date) => { const d = date.getDay(); return d >= 1 && d <= 5; };
 
@@ -337,9 +353,17 @@ export default function CarpoolApp() {
       lines.push(parse(ds).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }));
       list.forEach((s) => {
         const fam = familyById(s.familyId);
-        const bits = legs(s);
+        const legParts = [];
+        if (s.pickup) legParts.push(`Pickup${s.pickupTime ? " " + s.pickupTime : ""}${s.pickupLoc ? " @ " + s.pickupLoc : ""}`);
+        if (s.dropoff) legParts.push(`Dropoff${s.dropoffTime ? " " + s.dropoffTime : ""}${s.dropoffLoc ? " @ " + s.dropoffLoc : ""}`);
+        const bits = legParts.join(" · ");
         const v = vehicleById(fam, s.vehicleId);
-        lines.push(`  • ${fam ? fam.family : "?"}${bits ? " — " + bits : ""}${v ? ` [${v.name}${v.seats > 0 ? ", " + v.seats + " seats" : ""}]` : ""}${s.confirmed ? " ✓confirmed" : " (tentative)"}${s.type === "weekly" ? " [weekly]" : ""}${s.note ? "\n      note: " + s.note : ""}`);
+        const riderNames = (Array.isArray(s.riders) ? s.riders : []).map((rid) => {
+          const found = findMember(rid);
+          if (!found) return null;
+          return found.family.id === s.familyId ? found.member.name : `${found.member.name} (${found.family.family})`;
+        }).filter(Boolean);
+        lines.push(`  • ${fam ? fam.family : "?"}${bits ? " — " + bits : ""}${v ? ` [${v.name}${v.seats > 0 ? ", " + v.seats + " seats" : ""}]` : ""}${s.confirmed ? " ✓confirmed" : " (tentative)"}${s.type === "weekly" ? " [weekly]" : ""}${riderNames.length ? "\n      riders: " + riderNames.join(", ") : ""}${s.note ? "\n      note: " + s.note : ""}`);
       });
       lines.push("");
     });
@@ -585,7 +609,7 @@ export default function CarpoolApp() {
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button className="cp-btn" onClick={goToday} style={S.navBtnSm}>Today</button>
+          <button className="cp-btn" onClick={goToday} style={S.navBtnSm}>Today's plan</button>
           <button className="cp-btn" onClick={exportText} style={S.navBtnSm}>Export</button>
           <button className="cp-btn" onClick={shareInvite}
             style={{ ...S.navBtnSm, background: invited ? C.goSoft : C.card, color: invited ? C.go : C.slate, borderColor: invited ? C.go : C.line }}>
@@ -770,9 +794,15 @@ export default function CarpoolApp() {
                               {s.confirmed ? "✓ Confirmed" : "Tentative"}
                             </span>
                           </div>
-                          <div style={{ marginTop: 6, fontSize: 13.5, color: C.slate }}>
-                            {summary ? summary.replace(/\bP\b/g, "Pickup").replace(/\bD\b/g, "Dropoff") : "No pickup/dropoff set"}
-                            {s.type === "weekly" && <span style={{ ...S.miniTagInline, marginLeft: 6 }} title="Repeats weekly">↻ weekly</span>}
+                          <div style={{ marginTop: 6, fontSize: 13.5, color: C.slate, display: "flex", flexDirection: "column", gap: 3 }}>
+                            {!s.pickup && !s.dropoff && <span>No pickup/dropoff set</span>}
+                            {s.pickup && (
+                              <span><strong style={{ color: C.ink }}>Pickup</strong>{s.pickupTime ? ` · ${s.pickupTime}` : ""}{s.pickupLoc ? <span style={{ color: C.fog }}> — 📍 {s.pickupLoc}</span> : null}</span>
+                            )}
+                            {s.dropoff && (
+                              <span><strong style={{ color: C.ink }}>Dropoff</strong>{s.dropoffTime ? ` · ${s.dropoffTime}` : ""}{s.dropoffLoc ? <span style={{ color: C.fog }}> — 📍 {s.dropoffLoc}</span> : null}</span>
+                            )}
+                            {s.type === "weekly" && <span style={{ ...S.miniTagInline }} title="Repeats weekly">↻ weekly</span>}
                           </div>
                           {(() => { const v = vehicleById(fam, s.vehicleId); return v ? (
                             <div style={{ marginTop: 4, fontSize: 13, color: C.fog }}>
@@ -781,7 +811,12 @@ export default function CarpoolApp() {
                           ) : null; })()}
                           {Array.isArray(s.riders) && s.riders.length > 0 && (
                             <div style={{ marginTop: 4, fontSize: 13, color: C.slate }}>
-                              🎒 {s.riders.map((rid) => { const m = memberById(fam, rid); return m ? m.name : null; }).filter(Boolean).join(", ")}
+                              🎒 {s.riders.map((rid) => {
+                                const found = findMember(rid);
+                                if (!found) return null;
+                                // Label with family name when the rider isn't from the driving family
+                                return found.family.id === s.familyId ? found.member.name : `${found.member.name} (${found.family.family})`;
+                              }).filter(Boolean).join(", ")}
                             </div>
                           )}
                           {s.note && <div style={{ marginTop: 6, fontSize: 13, color: C.fog, fontStyle: "italic" }}>“{s.note}”</div>}
@@ -812,8 +847,8 @@ export default function CarpoolApp() {
 
             <div className="cp-legs" style={{ display: "flex", gap: 10, marginBottom: 16 }}>
               {[
-                { key: "pickup", timeKey: "pickupTime", label: "Pickup", ph: "e.g. 7:45 AM" },
-                { key: "dropoff", timeKey: "dropoffTime", label: "Dropoff", ph: "e.g. 3:30 PM" },
+                { key: "pickup", timeKey: "pickupTime", locKey: "pickupLoc", label: "Pickup", ph: "e.g. 7:45 AM", locPh: "Where? e.g. school front gate" },
+                { key: "dropoff", timeKey: "dropoffTime", locKey: "dropoffLoc", label: "Dropoff", ph: "e.g. 3:30 PM", locPh: "Where? e.g. 12 Oak St" },
               ].map((leg) => {
                 const on = draft[leg.key];
                 return (
@@ -830,6 +865,11 @@ export default function CarpoolApp() {
                       onChange={(e) => setD({ [leg.timeKey]: e.target.value })}
                       placeholder={leg.ph}
                       style={{ ...S.input, width: "100%", marginTop: 10, fontSize: 13, padding: "8px 10px", boxSizing: "border-box" }} />
+                    <input value={draft[leg.locKey] || ""} onClick={(e) => e.stopPropagation()}
+                      onFocus={() => { if (!on) setD({ [leg.key]: true }); }}
+                      onChange={(e) => setD({ [leg.locKey]: e.target.value })}
+                      placeholder={leg.locPh}
+                      style={{ ...S.input, width: "100%", marginTop: 8, fontSize: 13, padding: "8px 10px", boxSizing: "border-box" }} />
                   </div>
                 );
               })}
@@ -853,26 +893,67 @@ export default function CarpoolApp() {
               </>
             )}
 
-            {membersOf(activeFamily).length > 0 && (
-              <>
-                <label style={S.fieldLabel}>Who needs the carpool this day?</label>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-                  {membersOf(activeFamily).map((m) => {
-                    const on = (draft.riders || []).includes(m.id);
-                    return (
-                      <button key={m.id} className="cp-btn"
-                        onClick={() => setD({ riders: on ? draft.riders.filter((r) => r !== m.id) : [...(draft.riders || []), m.id] })}
-                        style={{ ...S.chip, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card, color: on ? C.go : C.slate }}>
-                        <span style={{ ...S.checkbox, width: 16, height: 16, borderColor: on ? C.go : C.fog, background: on ? C.go : "#fff" }}>
-                          {on && <span style={{ color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: 1 }}>✓</span>}
-                        </span>
-                        {m.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+            {(() => {
+              const toggleRider = (id) => {
+                const on = (draft.riders || []).includes(id);
+                setD({ riders: on ? draft.riders.filter((r) => r !== id) : [...(draft.riders || []), id] });
+              };
+              const RiderChip = ({ m, famName }) => {
+                const on = (draft.riders || []).includes(m.id);
+                return (
+                  <button key={m.id} className="cp-btn" onClick={() => toggleRider(m.id)}
+                    style={{ ...S.chip, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card, color: on ? C.go : C.slate }}>
+                    <span style={{ ...S.checkbox, width: 16, height: 16, borderColor: on ? C.go : C.fog, background: on ? C.go : "#fff" }}>
+                      {on && <span style={{ color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: 1 }}>✓</span>}
+                    </span>
+                    {m.name}{famName ? <span style={{ color: on ? C.go : C.fog, fontWeight: 600, fontSize: 11 }}>· {famName}</span> : null}
+                  </button>
+                );
+              };
+              const others = data.families.filter((f) => f.id !== me && membersOf(f).length > 0);
+              const hasOwn = membersOf(activeFamily).length > 0;
+              if (!hasOwn && others.length === 0) return null;
+              return (
+                <>
+                  {hasOwn && (
+                    <>
+                      <label style={S.fieldLabel}>Who needs the carpool this day?</label>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                        {membersOf(activeFamily).map((m) => <RiderChip key={m.id} m={m} />)}
+                      </div>
+                    </>
+                  )}
+                  {others.length > 0 && (
+                    <>
+                      <label style={S.fieldLabel}>Also picking up from another family?</label>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+                        {others.map((f) => {
+                          const open = expandedFam === f.id;
+                          const picked = membersOf(f).filter((m) => (draft.riders || []).includes(m.id)).length;
+                          return (
+                            <div key={f.id} style={{ border: `1px solid ${open ? C.go : C.line}`, borderRadius: 10, overflow: "hidden" }}>
+                              <button className="cp-btn" onClick={() => setExpandedFam(open ? null : f.id)}
+                                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
+                                  background: open ? C.goSoft : C.card, border: "none", padding: "10px 12px", cursor: "pointer" }}>
+                                <span style={{ ...S.dot, width: 10, height: 10, background: f.color }} />
+                                <span style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>{f.family}</span>
+                                {picked > 0 && <span style={{ ...S.seatTag, color: C.go, borderColor: C.go }}>{picked} added</span>}
+                                <span style={{ marginLeft: "auto", color: C.fog, fontSize: 13 }}>{open ? "▲" : `▼ ${membersOf(f).length} kid${membersOf(f).length > 1 ? "s" : ""}`}</span>
+                              </button>
+                              {open && (
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "10px 12px", borderTop: `1px solid ${C.line}` }}>
+                                  {membersOf(f).map((m) => <RiderChip key={m.id} m={m} />)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </>
+              );
+            })()}
 
             <label style={S.fieldLabel}>Notes</label>
             <textarea value={draft.note} onChange={(e) => setD({ note: e.target.value })}
