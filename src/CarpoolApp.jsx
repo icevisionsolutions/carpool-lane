@@ -589,6 +589,10 @@ export default function CarpoolApp() {
           <span>
             You're editing as <strong style={{ color: C.ink }}>{activeFamily.family}</strong>. Any day you add or change is saved under this family. Switch families with the buttons below.
           </span>
+        ) : data.families.length > 0 ? (
+          <span>
+            <strong style={{ color: C.ink }}>Just viewing</strong> — browse the calendar freely. To add or edit driving days, tap your family above.
+          </span>
         ) : (
           <span>
             <strong style={{ color: C.ink }}>Start by selecting your family below</strong> (or add a new one). Whichever family is highlighted is the one you're adding or editing carpool days for.
@@ -613,6 +617,12 @@ export default function CarpoolApp() {
           </div>
           {data.families.length > 0 && (
             <div className="cp-hidewrap" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="cp-btn" onClick={() => { setMe(null); setEditDate(null); setShowSetup(false); }}
+                title="Browse the calendar without editing"
+                style={{ ...S.chip, borderColor: !me ? C.brand : C.line,
+                  background: !me ? C.brand : C.card, color: !me ? "#fff" : C.slate }}>
+                👁 Just viewing
+              </button>
               {data.families.map((f) => (
                 <div key={f.id} style={{ display: "flex", alignItems: "center" }}>
                   <button className="cp-btn" onClick={() => { setMe(f.id); setEditDate(null); setShowSetup(false); }}
@@ -631,8 +641,8 @@ export default function CarpoolApp() {
             </div>
           )}
         </div>
-        {/* Add-family form: shown when no family is selected, or when explicitly adding */}
-        {(!activeFamily || showSetup) && (
+        {/* Add-family form: when no families exist yet, or when managing a selected family */}
+        {(data.families.length === 0 || showSetup) && (
           <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
             <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
               placeholder="New family name (e.g. The Jacksons)" style={{ ...S.input, flex: "2 1 180px" }} />
@@ -649,6 +659,13 @@ export default function CarpoolApp() {
               style={{ ...S.navBtnSm, background: showSetup ? C.goSoft : C.card, color: showSetup ? C.go : C.slate, borderColor: showSetup ? C.go : C.line }}>
               {showSetup ? "✓ Done editing family" : "⚙️ Manage cars & riders"}
             </button>
+          </div>
+        )}
+
+        {/* View-only mode (families exist, none selected): quiet way to add another */}
+        {!activeFamily && data.families.length > 0 && !showSetup && (
+          <div style={{ marginTop: 14 }}>
+            <button className="cp-btn" onClick={() => setShowSetup(true)} style={{ ...S.navBtnSm }}>+ Add a family</button>
           </div>
         )}
       </section>
@@ -1107,16 +1124,18 @@ export default function CarpoolApp() {
               </span>
             </label>
 
-            <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-              <button className="cp-btn" onClick={saveShift} style={{ ...S.primaryBtn, background: C.go, flex: 1 }}>Save</button>
-              {myShiftOn(editDate) && <button className="cp-btn" onClick={removeMine} style={S.removeBtn}>Remove mine</button>}
-              <button className="cp-btn" onClick={() => setEditDate(null)} style={S.ghostBtn}>Cancel</button>
+            <div style={{ position: "sticky", bottom: 0, background: C.card, paddingTop: 12, paddingBottom: 20, marginTop: 8, marginLeft: -24, marginRight: -24, paddingLeft: 24, paddingRight: 24, borderTop: `1px solid ${C.line}` }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="cp-btn" onClick={saveShift} style={{ ...S.primaryBtn, background: C.go, flex: 1 }}>Save</button>
+                {myShiftOn(editDate) && <button className="cp-btn" onClick={removeMine} style={S.removeBtn}>Remove</button>}
+                <button className="cp-btn" onClick={() => setEditDate(null)} style={S.ghostBtn}>Cancel</button>
+              </div>
+              {!draft.pickup && !draft.dropoff && (
+                <p style={{ margin: "8px 0 0", fontSize: 12, color: C.fog }}>
+                  Check pickup or dropoff to save. Saving with neither checked clears your slot for this day.
+                </p>
+              )}
             </div>
-            {!draft.pickup && !draft.dropoff && (
-              <p style={{ margin: "10px 0 0", fontSize: 12, color: C.fog }}>
-                Check pickup or dropoff to save. Saving with neither checked clears your slot for this day.
-              </p>
-            )}
           </div>
         </div>
       )}
@@ -1159,7 +1178,7 @@ function makeStyles(C) {
   const statusPill = { borderRadius: 999, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" };
   const editSmall = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" };
   const overlay = { position: "fixed", inset: 0, background: "rgba(28,34,48,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 };
-  const modal = { background: C.card, borderRadius: 16, padding: 24, width: "100%", maxWidth: 460, boxShadow: "0 20px 50px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" };
+  const modal = { background: C.card, borderRadius: 16, padding: "24px 24px 0", width: "100%", maxWidth: 460, boxShadow: "0 20px 50px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" };
   const fieldLabel = { display: "block", fontSize: 13, fontWeight: 700, color: C.slate, marginBottom: 6 };
   const legBox = { flex: 1, border: "1.5px solid", borderRadius: 12, padding: 12, cursor: "pointer" };
   const checkbox = { width: 20, height: 20, borderRadius: 6, border: "2px solid", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
