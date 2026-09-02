@@ -2,19 +2,33 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "./supabaseClient.js";
 
 // ── Design tokens ─────────────────────────────────────────────
-const C = {
-  ink: "#1c2230", slate: "#3a4356", fog: "#6b7488", line: "#dfe3ea",
-  paper: "#f6f7f9", card: "#ffffff", lane: "#f4b942", laneDeep: "#c98f16",
-  go: "#2f8f6b", goSoft: "#e4f2ec", today: "#eef3fb",
-  warn: "#c15b47", warnSoft: "#fbecea", tentative: "#9a6b12",
-};
+// ── Brand (Ice Vision Solutions) ──────────────────────────────
+// Colors sampled from the IVS logo: royal blue, ice-teal, deep navy.
+const BRAND = { blue: "#4070e5", blueDeep: "#2f57c4", teal: "#6cd0d8", tealDeep: "#3aa6b0", navy: "#173f5f" };
+
+function makeTheme(dark) {
+  if (dark) return {
+    ink: "#eef4fb", slate: "#c4d2e2", fog: "#8fa2b8", line: "#2b3a4d",
+    paper: "#0f1826", card: "#172233", lane: BRAND.teal, laneDeep: BRAND.tealDeep,
+    go: BRAND.blue, goSoft: "#1c2c46", today: "#1a2942",
+    warn: "#e08a7a", warnSoft: "#3a2622", tentative: "#d8b46a",
+    brand: BRAND.blue, brandDeep: BRAND.blueDeep, teal: BRAND.teal, navy: BRAND.navy,
+  };
+  return {
+    ink: "#14212e", slate: "#3a4b5c", fog: "#6b7d8f", line: "#dbe6f0",
+    paper: "#f2f7fc", card: "#ffffff", lane: BRAND.teal, laneDeep: BRAND.tealDeep,
+    go: BRAND.blue, goSoft: "#e9f0fd", today: "#e6f0fb",
+    warn: "#c15b47", warnSoft: "#fbecea", tentative: "#9a6b12",
+    brand: BRAND.blue, brandDeep: BRAND.blueDeep, teal: BRAND.teal, navy: BRAND.navy,
+  };
+}
 const FAMILY_COLORS = [
   "#3b6fb0", "#c15b47", "#4f9d69", "#8a5cb0",
   "#c98f16", "#3f9aa3", "#b0567f", "#6b7280",
 ];
 
 // The shared password. Change this to whatever you want, then re-deploy.
-const SHARED_PASSWORD = "carpool2026";
+const SHARED_PASSWORD = "esteem";
 // Row id in the Supabase table that holds the whole shared calendar.
 const DOC_ID = "main";
 
@@ -25,6 +39,16 @@ const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}
 const parse = (s) => new Date(s + "T00:00:00");
 
 export default function CarpoolApp() {
+  const [dark, setDark] = useState(() => {
+    try { return localStorage.getItem("ivs_dark") === "1"; } catch { return false; }
+  });
+  const C = makeTheme(dark);
+  const S = makeStyles(C);
+  const toggleDark = () => { setDark((d) => { const n = !d; try { localStorage.setItem("ivs_dark", n ? "1" : "0"); } catch {} return n; }); };
+  useEffect(() => {
+    try { document.body.style.background = C.paper; } catch {}
+  }, [C.paper]);
+
   // ── Password gate ────────────────────────────────────────────
   const [unlocked, setUnlocked] = useState(() => {
     try { return sessionStorage.getItem("cp_ok") === "1"; } catch { return false; }
@@ -41,13 +65,15 @@ export default function CarpoolApp() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connError, setConnError] = useState(false);
-  const [data, setData] = useState({ families: [], shifts: [], schoolDaysOnly: true });
+  const [data, setData] = useState({ families: [], shifts: [], schoolDaysOnly: true, passwordOff: false });
   const [me, setMe] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [driverInput, setDriverInput] = useState("");
   const [seatsInput, setSeatsInput] = useState("");
   const [vehNameInput, setVehNameInput] = useState("");
   const [vehSeatsInput, setVehSeatsInput] = useState("");
+  const [memberInput, setMemberInput] = useState("");
+  const [showSetup, setShowSetup] = useState(false);
 
   const now = new Date();
   const [view, setView] = useState({ y: now.getFullYear(), m: now.getMonth() });
@@ -71,11 +97,10 @@ export default function CarpoolApp() {
     setLoaded(true);
   }, []);
 
-  useEffect(() => { if (unlocked) load(); }, [unlocked, load]);
+  useEffect(() => { load(); }, [load]);
 
   // Live updates: refresh when anyone else saves, plus a slow poll as backup.
   useEffect(() => {
-    if (!unlocked) return;
     const channel = supabase
       .channel("carpool-changes")
       .on("postgres_changes",
@@ -85,7 +110,7 @@ export default function CarpoolApp() {
       .subscribe();
     const t = setInterval(load, 8000);
     return () => { supabase.removeChannel(channel); clearInterval(t); };
-  }, [unlocked, load]);
+  }, [load]);
 
   const persist = async (next) => {
     setData(next); setSaving(true);
@@ -156,6 +181,35 @@ export default function CarpoolApp() {
     await persist(next);
   };
   const vehicleById = (fam, vehId) => vehiclesOf(fam).find((v) => v.id === vehId);
+
+  // Family members (the kids who ride). Older data may not have any.
+  const membersOf = (fam) => (fam && Array.isArray(fam.members)) ? fam.members : [];
+  const addMember = async () => {
+    if (!me) return;
+    const name = memberInput.trim();
+    if (!name) return;
+    const next = {
+      ...data,
+      families: data.families.map((f) => f.id === me
+        ? { ...f, members: [...membersOf(f), { id: uid(), name }] }
+        : f),
+    };
+    await persist(next);
+    setMemberInput("");
+  };
+  const removeMember = async (memId) => {
+    const next = {
+      ...data,
+      families: data.families.map((f) => f.id === me
+        ? { ...f, members: membersOf(f).filter((m) => m.id !== memId) }
+        : f),
+      // Remove that member from any shifts' rider lists
+      shifts: data.shifts.map((s) => (s.familyId === me && Array.isArray(s.riders))
+        ? { ...s, riders: s.riders.filter((r) => r !== memId) } : s),
+    };
+    await persist(next);
+  };
+  const memberById = (fam, memId) => membersOf(fam).find((m) => m.id === memId);
   const familyById = (id) => data.families.find((f) => f.id === id);
   const activeFamily = me ? familyById(me) : null;
 
@@ -179,8 +233,8 @@ export default function CarpoolApp() {
     const existing = myShiftOn(dateStr);
     setViewDate(null);
     setEditDate(dateStr);
-    setDraft(existing ? { ...existing }
-      : { type: "single", pickup: false, pickupTime: "", dropoff: false, dropoffTime: "", note: "", confirmed: false, vehicleId: null, weekday: wd });
+    setDraft(existing ? { ...existing, riders: existing.riders || [] }
+      : { type: "single", pickup: false, pickupTime: "", dropoff: false, dropoffTime: "", note: "", confirmed: false, vehicleId: null, riders: [], weekday: wd });
   };
   const setD = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const clearMineFor = (dateStr, list) => {
@@ -203,7 +257,7 @@ export default function CarpoolApp() {
       id: uid(), familyId: me,
       pickup: draft.pickup, pickupTime: draft.pickupTime.trim(),
       dropoff: draft.dropoff, dropoffTime: draft.dropoffTime.trim(),
-      note: draft.note.trim(), confirmed: !!draft.confirmed, vehicleId: draft.vehicleId || null,
+      note: draft.note.trim(), confirmed: !!draft.confirmed, vehicleId: draft.vehicleId || null, riders: draft.riders || [],
     };
     const shift = draft.type === "weekly"
       ? { ...base, type: "weekly", weekday: wd }
@@ -289,9 +343,9 @@ export default function CarpoolApp() {
   const [invited, setInvited] = useState(false);
   const shareInvite = async () => {
     const link = window.location.origin + window.location.pathname;
-    const text = `Join our carpool calendar:\n${link}\nPassword: ${SHARED_PASSWORD}`;
+    const text = `Join our IVS Carpool calendar:\n${link}\nPassword: ${SHARED_PASSWORD}`;
     try {
-      if (navigator.share) { await navigator.share({ title: "The Carpool Lane", text }); return; }
+      if (navigator.share) { await navigator.share({ title: "IVS Carpool", text }); return; }
       await navigator.clipboard.writeText(text);
       setInvited(true); setTimeout(() => setInvited(false), 2200);
     } catch (e) {
@@ -299,37 +353,60 @@ export default function CarpoolApp() {
     }
   };
 
+  const togglePassword = async () => {
+    const turningOff = !data.passwordOff;
+    const msg = turningOff
+      ? "Turn OFF the password for everyone? Anyone with the link will get straight in — no password needed."
+      : "Turn the password back ON for everyone?";
+    if (!confirm(msg)) return;
+    await persist({ ...data, passwordOff: turningOff });
+  };
+  const unlockAndDisable = async () => {
+    if (pw !== SHARED_PASSWORD) { setPwError(true); return; }
+    setUnlocked(true); setPwError(false);
+    try { sessionStorage.setItem("cp_ok", "1"); } catch {}
+    await persist({ ...data, passwordOff: true });
+  };
+
   // ── Password screen ──────────────────────────────────────────
-  if (!unlocked) {
+  if (!unlocked && !data.passwordOff) {
     return (
-      <div style={{ ...wrap, alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
-        <div style={{ ...panel, maxWidth: 380, width: "100%", textAlign: "center" }}>
+      <div style={{ ...S.wrap, alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div style={{ ...S.panel, maxWidth: 380, width: "100%", textAlign: "center" }}>
           <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
-            <div style={{ ...laneStrip, flex: "0 0 120px" }} aria-hidden />
+            <img src="/logo.png" alt="Ice Vision Solutions" width={96} height={96}
+              style={{ borderRadius: 20, boxShadow: "0 6px 20px rgba(23,63,95,0.25)" }} />
           </div>
-          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.ink }}>The Carpool Lane</h1>
+          <h1 style={{ margin: "0 0 2px", fontSize: 24, fontWeight: 800, color: C.ink }}>IVS Carpool</h1>
+          <p style={{ color: C.brand, margin: "0 0 14px", fontSize: 12.5, fontWeight: 700, letterSpacing: ".04em" }}>ICE VISION SOLUTIONS</p>
           <p style={{ color: C.fog, margin: "0 0 18px", fontSize: 14 }}>Enter the shared password to open the calendar.</p>
           <input type="password" value={pw} autoFocus
             onChange={(e) => { setPw(e.target.value); setPwError(false); }}
             onKeyDown={(e) => e.key === "Enter" && tryUnlock()}
             placeholder="Password"
-            style={{ ...input, width: "100%", boxSizing: "border-box", marginBottom: 10, textAlign: "center" }} />
+            style={{ ...S.input, width: "100%", boxSizing: "border-box", marginBottom: 10, textAlign: "center" }} />
           {pwError && <p style={{ color: C.warn, fontSize: 13, margin: "0 0 10px" }}>That password didn't match. Try again.</p>}
-          <button onClick={tryUnlock} style={{ ...primaryBtn, width: "100%", background: C.go }}>Open calendar</button>
+          <button onClick={tryUnlock} style={{ ...S.primaryBtn, width: "100%", background: C.go }}>Open calendar</button>
+          <button onClick={unlockAndDisable} style={{ ...S.ghostBtn, width: "100%", marginTop: 8, boxSizing: "border-box" }}>
+            Open &amp; turn password off for everyone
+          </button>
+          <p style={{ color: C.fog, fontSize: 11.5, margin: "8px 0 0" }}>
+            Turning it off means anyone with the link gets in without a password. You can turn it back on inside the app.
+          </p>
         </div>
       </div>
     );
   }
 
   if (!loaded) {
-    return <div style={{ ...wrap, alignItems: "center", justifyContent: "center", minHeight: 300 }}>
+    return <div style={{ ...S.wrap, alignItems: "center", justifyContent: "center", minHeight: 300 }}>
       <span style={{ color: C.fog }}>Loading the shared calendar…</span>
     </div>;
   }
   const editWd = editDate ? parse(editDate).getDay() : null;
 
   return (
-    <div style={wrap}>
+    <div style={S.wrap}>
       <style>{`
         .cp-day { transition: background .12s ease; cursor: pointer; }
         .cp-day:hover { background: ${C.paper}; }
@@ -344,21 +421,29 @@ export default function CarpoolApp() {
       `}</style>
 
       <header style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-          <h1 style={{ margin: 0, fontSize: 30, letterSpacing: "-0.02em", color: C.ink, fontWeight: 800 }}>The Carpool Lane</h1>
-          <div style={laneStrip} aria-hidden />
-          <span style={{ marginLeft: "auto", fontSize: 12, color: connError ? C.warn : saving ? C.go : C.fog, transition: "color .2s" }}>
-            {connError ? "Can't reach the server" : saving ? "Saving…" : "All changes shared"}
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <img src="/logo.png" alt="Ice Vision Solutions" width={44} height={44}
+            style={{ borderRadius: 11, boxShadow: "0 2px 8px rgba(23,63,95,0.2)", flexShrink: 0 }} />
+          <div style={{ lineHeight: 1.1 }}>
+            <h1 style={{ margin: 0, fontSize: 27, letterSpacing: "-0.02em", color: C.ink, fontWeight: 800 }}>IVS Carpool</h1>
+            <span style={{ fontSize: 11, color: C.brand, fontWeight: 700, letterSpacing: ".05em" }}>ICE VISION SOLUTIONS</span>
+          </div>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+            <button className="cp-btn" onClick={toggleDark} title="Toggle dark mode"
+              style={{ ...S.navBtnSm, padding: "6px 10px" }}>{dark ? "☀️ Light" : "🌙 Dark"}</button>
+            <span style={{ fontSize: 12, color: connError ? C.warn : saving ? C.go : C.fog, transition: "color .2s" }}>
+              {connError ? "Can't reach the server" : saving ? "Saving…" : "All changes shared"}
+            </span>
+          </div>
         </div>
-        <p style={{ margin: "6px 0 0", color: C.fog, fontSize: 15 }}>
+        <p style={{ margin: "10px 0 0", color: C.fog, fontSize: 15 }}>
           One shared month. Tap a day to set pickup, dropoff, or both — for that day or every week.
         </p>
       </header>
 
       {/* How-to banner — makes the selected family explicit */}
-      <div style={{ ...howTo, borderColor: activeFamily ? (activeFamily.color) : C.lane,
-        background: activeFamily ? C.goSoft : "#fdf6e3" }}>
+      <div style={{ ...S.howTo, borderColor: activeFamily ? (activeFamily.color) : C.brand,
+        background: activeFamily ? C.goSoft : C.today }}>
         {activeFamily ? (
           <span>
             You're editing as <strong style={{ color: C.ink }}>{activeFamily.family}</strong>. Any day you add or change is saved under this family. Switch families with the buttons below.
@@ -370,17 +455,17 @@ export default function CarpoolApp() {
         )}
       </div>
 
-      <section style={{ ...panel, marginBottom: 14 }}>
+      <section style={{ ...S.panel, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
           <div>
-            <div style={eyebrow}>Driving as</div>
+            <div style={S.eyebrow}>Driving as</div>
             {activeFamily ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ ...dot, background: activeFamily.color }} />
+                <span style={{ ...S.dot, background: activeFamily.color }} />
                 <strong style={{ color: C.ink, fontSize: 17 }}>{activeFamily.family}</strong>
                 {activeFamily.driver && <span style={{ color: C.fog }}>· {activeFamily.driver}</span>}
                 {vehiclesOf(activeFamily).length > 0 && (
-                  <span style={seatTag}>{vehiclesOf(activeFamily).length} {vehiclesOf(activeFamily).length === 1 ? "car" : "cars"}</span>
+                  <span style={S.seatTag}>{vehiclesOf(activeFamily).length} {vehiclesOf(activeFamily).length === 1 ? "car" : "cars"}</span>
                 )}
               </div>
             ) : <span style={{ color: C.fog }}>Pick your family, or add a new one below.</span>}
@@ -389,38 +474,49 @@ export default function CarpoolApp() {
             <div className="cp-hidewrap" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {data.families.map((f) => (
                 <div key={f.id} style={{ display: "flex", alignItems: "center" }}>
-                  <button className="cp-btn" onClick={() => { setMe(f.id); setEditDate(null); }}
-                    style={{ ...chip, borderColor: me === f.id ? f.color : C.line,
+                  <button className="cp-btn" onClick={() => { setMe(f.id); setEditDate(null); setShowSetup(false); }}
+                    style={{ ...S.chip, borderColor: me === f.id ? f.color : C.line,
                       background: me === f.id ? f.color : C.card, color: me === f.id ? "#fff" : C.slate }}>
-                    <span style={{ ...dot, background: me === f.id ? "#fff" : f.color }} />
+                    <span style={{ ...S.dot, background: me === f.id ? "#fff" : f.color }} />
                     {f.family}
                   </button>
                   {me === f.id && (
                     <button title="Remove this family" className="cp-btn"
                       onClick={() => { if (confirm(`Remove ${f.family} and all their driving days?`)) removeFamily(f.id); }}
-                      style={xBtn}>×</button>
+                      style={S.xBtn}>×</button>
                   )}
                 </div>
               ))}
             </div>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-          <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
-            placeholder="Family name (e.g. The Okafors)" style={{ ...input, flex: "2 1 180px" }} />
-          <input value={driverInput} onChange={(e) => setDriverInput(e.target.value)}
-            placeholder="Driver (optional)" style={{ ...input, flex: "1 1 130px" }} />
-          <input value={seatsInput} onChange={(e) => setSeatsInput(e.target.value)} type="number" min="0"
-            placeholder="Seats" title="Seats in their first car (optional — you can add more cars after)" style={{ ...input, flex: "0 1 90px" }} />
-          <button className="cp-btn" onClick={addFamily} style={primaryBtn}>Add family</button>
-        </div>
+        {/* Add-family form: shown when no family is selected, or when explicitly adding */}
+        {(!activeFamily || showSetup) && (
+          <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+              placeholder="New family name (e.g. The Jacksons)" style={{ ...S.input, flex: "2 1 180px" }} />
+            <input value={driverInput} onChange={(e) => setDriverInput(e.target.value)}
+              placeholder="Driver (optional)" style={{ ...S.input, flex: "1 1 130px" }} />
+            <button className="cp-btn" onClick={addFamily} style={S.primaryBtn}>Add family</button>
+          </div>
+        )}
+
+        {/* When a family is selected: one clean toggle for their setup */}
+        {activeFamily && (
+          <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+            <button className="cp-btn" onClick={() => setShowSetup((v) => !v)}
+              style={{ ...S.navBtnSm, background: showSetup ? C.goSoft : C.card, color: showSetup ? C.go : C.slate, borderColor: showSetup ? C.go : C.line }}>
+              {showSetup ? "✓ Done editing family" : "⚙️ Manage cars & riders"}
+            </button>
+          </div>
+        )}
       </section>
 
-      {/* Garage — vehicles for the active family */}
-      {activeFamily && (
-        <section style={{ ...panel, marginBottom: 14 }}>
+      {/* Garage — vehicles + riders for the active family (collapsible) */}
+      {activeFamily && showSetup && (
+        <section style={{ ...S.panel, marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-            <div style={eyebrow}>{activeFamily.family}'s cars</div>
+            <div style={S.eyebrow}>{activeFamily.family}'s cars</div>
             <span style={{ color: C.fog, fontSize: 12.5 }}>
               Add each vehicle you might drive — you'll pick one per day.
             </span>
@@ -428,12 +524,12 @@ export default function CarpoolApp() {
           {vehiclesOf(activeFamily).length > 0 ? (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
               {vehiclesOf(activeFamily).map((v) => (
-                <div key={v.id} style={vehTag}>
+                <div key={v.id} style={S.vehTag}>
                   <span style={{ fontWeight: 700, color: C.ink }}>{v.name}</span>
                   <span style={{ color: C.fog, fontSize: 12.5 }}>{v.seats > 0 ? `${v.seats} seats` : "seats n/a"}</span>
                   <button title="Remove car" className="cp-btn"
                     onClick={() => { if (confirm(`Remove ${v.name}?`)) removeVehicle(v.id); }}
-                    style={vehX}>×</button>
+                    style={S.vehX}>×</button>
                 </div>
               ))}
             </div>
@@ -443,50 +539,81 @@ export default function CarpoolApp() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input value={vehNameInput} onChange={(e) => setVehNameInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addVehicle()}
-              placeholder="Car name (e.g. Blue Van, Grandpa's SUV)" style={{ ...input, flex: "2 1 200px" }} />
+              placeholder="Car name (e.g. Blue Van, Grandpa's SUV)" style={{ ...S.input, flex: "2 1 200px" }} />
             <input value={vehSeatsInput} onChange={(e) => setVehSeatsInput(e.target.value)} type="number" min="0"
               onKeyDown={(e) => e.key === "Enter" && addVehicle()}
-              placeholder="Seats" style={{ ...input, flex: "0 1 90px" }} />
-            <button className="cp-btn" onClick={addVehicle} style={{ ...primaryBtn, background: C.go }}>Add car</button>
+              placeholder="Seats" style={{ ...S.input, flex: "0 1 90px" }} />
+            <button className="cp-btn" onClick={addVehicle} style={{ ...S.primaryBtn, background: C.go }}>Add car</button>
+          </div>
+
+          {/* Family members / kids in the carpool */}
+          <div style={{ borderTop: `1px solid ${C.line}`, marginTop: 16, paddingTop: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={S.eyebrow}>{activeFamily.family}'s riders</div>
+              <span style={{ color: C.fog, fontSize: 12.5 }}>Add each kid — you'll pick who's riding on each day.</span>
+            </div>
+            {membersOf(activeFamily).length > 0 ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                {membersOf(activeFamily).map((m) => (
+                  <div key={m.id} style={S.vehTag}>
+                    <span style={{ fontWeight: 700, color: C.ink }}>{m.name}</span>
+                    <button title="Remove rider" className="cp-btn"
+                      onClick={() => { if (confirm(`Remove ${m.name}?`)) removeMember(m.id); }} style={S.vehX}>×</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ color: C.fog, fontSize: 13, margin: "0 0 12px" }}>No riders added yet.</p>
+            )}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <input value={memberInput} onChange={(e) => setMemberInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addMember()}
+                placeholder="Child's name (e.g. Maya)" style={{ ...S.input, flex: "2 1 200px" }} />
+              <button className="cp-btn" onClick={addMember} style={{ ...S.primaryBtn, background: C.go }}>Add rider</button>
+            </div>
           </div>
         </section>
       )}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-        <div style={tabRow}>
+        <div style={S.tabRow}>
           {[
             { k: "calendar", t: "Calendar" },
             { k: "coverage", t: `Coverage${uncovered.length ? ` · ${uncovered.length}` : ""}` },
             { k: "mine", t: "My days" },
           ].map((x) => (
             <button key={x.k} className="cp-btn" onClick={() => setTab(x.k)}
-              style={{ ...tabBtn, background: tab === x.k ? C.ink : "transparent", color: tab === x.k ? "#fff" : C.slate }}>
+              style={{ ...S.tabBtn, background: tab === x.k ? C.brand : "transparent", color: tab === x.k ? "#fff" : C.slate }}>
               {x.t}
             </button>
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button className="cp-btn" onClick={goToday} style={navBtnSm}>Today</button>
-          <button className="cp-btn" onClick={exportText} style={navBtnSm}>Export</button>
+          <button className="cp-btn" onClick={goToday} style={S.navBtnSm}>Today</button>
+          <button className="cp-btn" onClick={exportText} style={S.navBtnSm}>Export</button>
           <button className="cp-btn" onClick={shareInvite}
-            style={{ ...navBtnSm, background: invited ? C.goSoft : C.card, color: invited ? C.go : C.slate, borderColor: invited ? C.go : C.line }}>
+            style={{ ...S.navBtnSm, background: invited ? C.goSoft : C.card, color: invited ? C.go : C.slate, borderColor: invited ? C.go : C.line }}>
             {invited ? "Copied ✓" : "Invite"}
+          </button>
+          <button className="cp-btn" onClick={togglePassword} title="Turn the shared password on or off for everyone"
+            style={{ ...S.navBtnSm, color: data.passwordOff ? C.warn : C.slate }}>
+            {data.passwordOff ? "🔓 Password off" : "🔒 Password on"}
           </button>
         </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-        <button className="cp-btn" onClick={() => shiftMonth(-1)} style={navBtn}>‹ Prev</button>
+        <button className="cp-btn" onClick={() => shiftMonth(-1)} style={S.navBtn}>‹ Prev</button>
         <h2 style={{ margin: 0, fontSize: 20, color: C.ink, fontWeight: 800 }}>{MONTHS[view.m]} {view.y}</h2>
-        <button className="cp-btn" onClick={() => shiftMonth(1)} style={navBtn}>Next ›</button>
+        <button className="cp-btn" onClick={() => shiftMonth(1)} style={S.navBtn}>Next ›</button>
       </div>
 
       {tab === "calendar" && (
         <>
-          <div className="cp-cal" style={cal}>
-            {WD.map((d) => <div key={d} style={wdHead}>{d}</div>)}
+          <div className="cp-cal" style={S.cal}>
+            {WD.map((d) => <div key={d} style={S.wdHead}>{d}</div>)}
             {grid.map((date, i) => {
-              if (!date) return <div key={i} style={{ ...dayCell, background: C.paper, cursor: "default" }} />;
+              if (!date) return <div key={i} style={{ ...S.dayCell, background: C.paper, cursor: "default" }} />;
               const ds = ymd(date);
               const list = shiftsOn(ds);
               const mine = myShiftOn(ds);
@@ -494,44 +621,44 @@ export default function CarpoolApp() {
               const gap = list.length === 0 && (!data.schoolDaysOnly || isSchoolDay(date));
               return (
                 <div key={i} className="cp-day" onClick={() => openDay(ds)}
-                  style={{ ...dayCell,
+                  style={{ ...S.dayCell,
                     background: isToday ? C.today : gap ? C.warnSoft : C.card,
                     boxShadow: mine ? `inset 0 0 0 2px ${activeFamily?.color || C.lane}` : "none" }}>
                   <div className="cp-daynum" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                     <span style={{ fontWeight: isToday ? 800 : 600, fontSize: 13, color: isToday ? C.ink : C.slate }}>{date.getDate()}</span>
-                    {gap && <span title="No driver yet" style={gapDot} />}
+                    {gap && <span title="No driver yet" style={S.gapDot} />}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                    {list.slice(0, 4).map((s) => {
+                    {list.slice(0, 5).map((s) => {
                       const fam = familyById(s.familyId);
                       if (!fam) return null;
                       const summary = legs(s);
                       const tip = `${fam.family}${summary ? " — " + summary : ""}${s.confirmed ? " (confirmed)" : " (tentative)"}${s.type === "weekly" ? " [weekly]" : ""}${s.note ? "\nNote: " + s.note : ""}`;
                       return (
                         <div key={s.id} title={tip}
-                          style={{ ...pill, background: fam.color, opacity: s.confirmed ? 1 : 0.62,
+                          style={{ ...S.pill, background: fam.color, opacity: s.confirmed ? 1 : 0.62,
                             border: s.confirmed ? "1px solid rgba(255,255,255,.5)" : "1px dashed rgba(255,255,255,.7)" }}>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {s.confirmed ? "✓ " : ""}{fam.family}{summary ? ` · ${summary}` : ""}
                           </span>
-                          {s.note && <span style={miniTag}>✎</span>}
-                          {s.type === "weekly" && <span style={miniTag}>↻</span>}
+                          {s.note && <span style={S.miniTag}>✎</span>}
+                          {s.type === "weekly" && <span style={S.miniTag}>↻</span>}
                         </div>
                       );
                     })}
-                    {list.length > 4 && <span style={{ fontSize: 10.5, color: C.fog }}>+{list.length - 4} more</span>}
+                    {list.length > 5 && <span style={{ fontSize: 10.5, color: C.fog }}>+{list.length - 5} more</span>}
                   </div>
                 </div>
               );
             })}
           </div>
-          <div style={legendRow}>
+          <div style={S.legendRow}>
             <span><strong style={{ color: C.slate }}>P</strong> pickup</span>
             <span><strong style={{ color: C.slate }}>D</strong> dropoff</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>✓ confirmed · <em style={{ opacity: .7 }}>dashed = tentative</em></span>
-            <span><span style={miniTagInline}>↻</span> weekly</span>
-            <span><span style={miniTagInline}>✎</span> note</span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={gapDotInline} /> no driver</span>
+            <span><span style={S.miniTagInline}>↻</span> weekly</span>
+            <span><span style={S.miniTagInline}>✎</span> note</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={S.gapDotInline} /> no driver</span>
             <label style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
               <input type="checkbox" checked={data.schoolDaysOnly}
                 onChange={(e) => persist({ ...data, schoolDaysOnly: e.target.checked })} />
@@ -542,7 +669,7 @@ export default function CarpoolApp() {
       )}
 
       {tab === "coverage" && (
-        <section style={panel}>
+        <section style={S.panel}>
           {uncovered.length === 0 ? (
             <div style={{ textAlign: "center", padding: "24px 8px" }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: C.go }}>Every day is covered</div>
@@ -558,7 +685,7 @@ export default function CarpoolApp() {
                 {uncovered.map((date) => {
                   const ds = ymd(date);
                   return (
-                    <button key={ds} className="cp-btn" onClick={() => { setTab("calendar"); openEditor(ds); }} style={coverRow}>
+                    <button key={ds} className="cp-btn" onClick={() => { setTab("calendar"); openEditor(ds); }} style={S.coverRow}>
                       <span style={{ fontWeight: 700, color: C.ink }}>
                         {date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
                       </span>
@@ -573,7 +700,7 @@ export default function CarpoolApp() {
       )}
 
       {tab === "mine" && (
-        <section style={panel}>
+        <section style={S.panel}>
           {!me ? (
             <p style={{ color: C.fog, textAlign: "center", padding: "20px 0" }}>Pick your family above to see your days.</p>
           ) : myList.length === 0 ? (
@@ -584,21 +711,21 @@ export default function CarpoolApp() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {myList.map(({ date, shift }) => (
-                <div key={shift.id + date} style={mineRow}>
+                <div key={shift.id + date} style={S.mineRow}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
                     <span style={{ fontWeight: 700, color: C.ink }}>
                       {parse(date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}
-                      {shift.type === "weekly" && <span style={{ ...miniTagInline, marginLeft: 6 }}>↻</span>}
+                      {shift.type === "weekly" && <span style={{ ...S.miniTagInline, marginLeft: 6 }}>↻</span>}
                     </span>
                     <span style={{ fontSize: 13, color: C.fog }}>{legs(shift) || "No legs set"}{shift.note ? ` — ${shift.note}` : ""}</span>
                   </div>
                   <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
                     <button className="cp-btn" onClick={() => toggleConfirm(shift.id)}
-                      style={{ ...statusBtn, background: shift.confirmed ? C.goSoft : "#fff",
+                      style={{ ...S.statusBtn, background: shift.confirmed ? C.goSoft : "#fff",
                         color: shift.confirmed ? C.go : C.tentative, borderColor: shift.confirmed ? C.go : C.line }}>
                       {shift.confirmed ? "✓ Confirmed" : "Tentative"}
                     </button>
-                    <button className="cp-btn" onClick={() => { setTab("calendar"); openEditor(date); }} style={editSmall}>Edit</button>
+                    <button className="cp-btn" onClick={() => { setTab("calendar"); openEditor(date); }} style={S.editSmall}>Edit</button>
                   </div>
                 </div>
               ))}
@@ -612,8 +739,8 @@ export default function CarpoolApp() {
         const list = shiftsOn(viewDate);
         const mineHere = list.find((s) => s.familyId === me);
         return (
-          <div style={overlay} onClick={() => setViewDate(null)}>
-            <div style={modal} onClick={(e) => e.stopPropagation()}>
+          <div style={S.overlay} onClick={() => setViewDate(null)}>
+            <div style={S.modal} onClick={(e) => e.stopPropagation()}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                 <div>
                   <div style={{ fontSize: 12, color: C.fog, fontWeight: 600 }}>Schedule for</div>
@@ -621,7 +748,7 @@ export default function CarpoolApp() {
                     {parse(viewDate).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
                   </h3>
                 </div>
-                <button className="cp-btn" onClick={() => setViewDate(null)} style={xBtn} title="Close">×</button>
+                <button className="cp-btn" onClick={() => setViewDate(null)} style={S.xBtn} title="Close">×</button>
               </div>
 
               <div style={{ margin: "16px 0" }}>
@@ -641,7 +768,7 @@ export default function CarpoolApp() {
                           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                             <strong style={{ color: C.ink }}>{fam.family}</strong>
                             {fam.driver && <span style={{ color: C.fog, fontSize: 13 }}>· {fam.driver}</span>}
-                            <span style={{ marginLeft: "auto", ...statusPill,
+                            <span style={{ marginLeft: "auto", ...S.statusPill,
                               background: s.confirmed ? C.goSoft : "#fff", color: s.confirmed ? C.go : C.tentative,
                               border: `1px solid ${s.confirmed ? C.go : C.line}` }}>
                               {s.confirmed ? "✓ Confirmed" : "Tentative"}
@@ -649,13 +776,18 @@ export default function CarpoolApp() {
                           </div>
                           <div style={{ marginTop: 6, fontSize: 13.5, color: C.slate }}>
                             {summary ? summary.replace(/\bP\b/g, "Pickup").replace(/\bD\b/g, "Dropoff") : "No pickup/dropoff set"}
-                            {s.type === "weekly" && <span style={{ ...miniTagInline, marginLeft: 6 }} title="Repeats weekly">↻ weekly</span>}
+                            {s.type === "weekly" && <span style={{ ...S.miniTagInline, marginLeft: 6 }} title="Repeats weekly">↻ weekly</span>}
                           </div>
                           {(() => { const v = vehicleById(fam, s.vehicleId); return v ? (
                             <div style={{ marginTop: 4, fontSize: 13, color: C.fog }}>
                               🚗 {v.name}{v.seats > 0 ? ` · ${v.seats} seats` : ""}
                             </div>
                           ) : null; })()}
+                          {Array.isArray(s.riders) && s.riders.length > 0 && (
+                            <div style={{ marginTop: 4, fontSize: 13, color: C.slate }}>
+                              🎒 {s.riders.map((rid) => { const m = memberById(fam, rid); return m ? m.name : null; }).filter(Boolean).join(", ")}
+                            </div>
+                          )}
                           {s.note && <div style={{ marginTop: 6, fontSize: 13, color: C.fog, fontStyle: "italic" }}>“{s.note}”</div>}
                         </div>
                       );
@@ -664,7 +796,7 @@ export default function CarpoolApp() {
                 )}
               </div>
 
-              <button className="cp-btn" onClick={() => openEditor(viewDate)} style={{ ...primaryBtn, width: "100%", background: C.go }}>
+              <button className="cp-btn" onClick={() => openEditor(viewDate)} style={{ ...S.primaryBtn, width: "100%", background: C.go }}>
                 {!me ? "Pick your family to sign up" : mineHere ? "Edit my day" : "Add my day"}
               </button>
             </div>
@@ -673,8 +805,8 @@ export default function CarpoolApp() {
       })()}
 
       {editDate && draft && (
-        <div style={overlay} onClick={() => setEditDate(null)}>
-          <div style={modal} onClick={(e) => e.stopPropagation()}>
+        <div style={S.overlay} onClick={() => setEditDate(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
             <div style={{ fontSize: 12, color: C.fog, fontWeight: 600 }}>
               {activeFamily ? `${activeFamily.family} can drive on` : "You can drive on"}
             </div>
@@ -690,9 +822,9 @@ export default function CarpoolApp() {
                 const on = draft[leg.key];
                 return (
                   <div key={leg.key} onClick={() => setD({ [leg.key]: !on })}
-                    style={{ ...legBox, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card }}>
+                    style={{ ...S.legBox, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ ...checkbox, borderColor: on ? C.go : C.fog, background: on ? C.go : "#fff" }}>
+                      <span style={{ ...S.checkbox, borderColor: on ? C.go : C.fog, background: on ? C.go : "#fff" }}>
                         {on && <span style={{ color: "#fff", fontSize: 13, fontWeight: 900, lineHeight: 1 }}>✓</span>}
                       </span>
                       <strong style={{ color: C.ink, fontSize: 15 }}>{leg.label}</strong>
@@ -701,7 +833,7 @@ export default function CarpoolApp() {
                       onFocus={() => { if (!on) setD({ [leg.key]: true }); }}
                       onChange={(e) => setD({ [leg.timeKey]: e.target.value })}
                       placeholder={leg.ph}
-                      style={{ ...input, width: "100%", marginTop: 10, fontSize: 13, padding: "8px 10px", boxSizing: "border-box" }} />
+                      style={{ ...S.input, width: "100%", marginTop: 10, fontSize: 13, padding: "8px 10px", boxSizing: "border-box" }} />
                   </div>
                 );
               })}
@@ -709,13 +841,13 @@ export default function CarpoolApp() {
 
             {vehiclesOf(activeFamily).length > 0 && (
               <>
-                <label style={fieldLabel}>Which car?</label>
+                <label style={S.fieldLabel}>Which car?</label>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
                   {vehiclesOf(activeFamily).map((v) => {
                     const on = draft.vehicleId === v.id;
                     return (
                       <button key={v.id} className="cp-btn" onClick={() => setD({ vehicleId: on ? null : v.id })}
-                        style={{ ...vehPick, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card }}>
+                        style={{ ...S.vehPick, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card }}>
                         <span style={{ fontWeight: 700, color: C.ink }}>{v.name}</span>
                         {v.seats > 0 && <span style={{ fontSize: 12, color: C.fog }}>{v.seats} seats</span>}
                       </button>
@@ -725,20 +857,41 @@ export default function CarpoolApp() {
               </>
             )}
 
-            <label style={fieldLabel}>Notes</label>
+            {membersOf(activeFamily).length > 0 && (
+              <>
+                <label style={S.fieldLabel}>Who needs the carpool this day?</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                  {membersOf(activeFamily).map((m) => {
+                    const on = (draft.riders || []).includes(m.id);
+                    return (
+                      <button key={m.id} className="cp-btn"
+                        onClick={() => setD({ riders: on ? draft.riders.filter((r) => r !== m.id) : [...(draft.riders || []), m.id] })}
+                        style={{ ...S.chip, borderColor: on ? C.go : C.line, background: on ? C.goSoft : C.card, color: on ? C.go : C.slate }}>
+                        <span style={{ ...S.checkbox, width: 16, height: 16, borderColor: on ? C.go : C.fog, background: on ? C.go : "#fff" }}>
+                          {on && <span style={{ color: "#fff", fontSize: 11, fontWeight: 900, lineHeight: 1 }}>✓</span>}
+                        </span>
+                        {m.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <label style={S.fieldLabel}>Notes</label>
             <textarea value={draft.note} onChange={(e) => setD({ note: e.target.value })}
               placeholder="Details for the other families — meeting spot, which kids, running late, etc."
               rows={3}
-              style={{ ...input, width: "100%", marginBottom: 16, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }} />
+              style={{ ...S.input, width: "100%", marginBottom: 16, resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }} />
 
-            <label style={fieldLabel}>How often?</label>
+            <label style={S.fieldLabel}>How often?</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               {[
                 { k: "single", t: "Just this day", s: "One-time" },
                 { k: "weekly", t: "Every week", s: `Every ${WD[editWd]}` },
               ].map((o) => (
                 <button key={o.k} className="cp-btn" onClick={() => setD({ type: o.k })}
-                  style={{ ...typeBtn, borderColor: draft.type === o.k ? C.go : C.line,
+                  style={{ ...S.typeBtn, borderColor: draft.type === o.k ? C.go : C.line,
                     background: draft.type === o.k ? C.goSoft : C.card }}>
                   <span style={{ fontWeight: 700, color: C.ink }}>{o.t}</span>
                   <span style={{ fontSize: 12, color: C.fog }}>{o.s}</span>
@@ -746,8 +899,8 @@ export default function CarpoolApp() {
               ))}
             </div>
 
-            <label onClick={() => setD({ confirmed: !draft.confirmed })} style={confirmToggle}>
-              <span style={{ ...checkbox, borderColor: draft.confirmed ? C.go : C.fog, background: draft.confirmed ? C.go : "#fff" }}>
+            <label onClick={() => setD({ confirmed: !draft.confirmed })} style={S.confirmToggle}>
+              <span style={{ ...S.checkbox, borderColor: draft.confirmed ? C.go : C.fog, background: draft.confirmed ? C.go : "#fff" }}>
                 {draft.confirmed && <span style={{ color: "#fff", fontSize: 13, fontWeight: 900, lineHeight: 1 }}>✓</span>}
               </span>
               <span>
@@ -757,9 +910,9 @@ export default function CarpoolApp() {
             </label>
 
             <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-              <button className="cp-btn" onClick={saveShift} style={{ ...primaryBtn, background: C.go, flex: 1 }}>Save</button>
-              {myShiftOn(editDate) && <button className="cp-btn" onClick={removeMine} style={removeBtn}>Remove mine</button>}
-              <button className="cp-btn" onClick={() => setEditDate(null)} style={ghostBtn}>Cancel</button>
+              <button className="cp-btn" onClick={saveShift} style={{ ...S.primaryBtn, background: C.go, flex: 1 }}>Save</button>
+              {myShiftOn(editDate) && <button className="cp-btn" onClick={removeMine} style={S.removeBtn}>Remove mine</button>}
+              <button className="cp-btn" onClick={() => setEditDate(null)} style={S.ghostBtn}>Cancel</button>
             </div>
             {!draft.pickup && !draft.dropoff && (
               <p style={{ margin: "10px 0 0", fontSize: 12, color: C.fog }}>
@@ -774,44 +927,47 @@ export default function CarpoolApp() {
 }
 
 // ── Styles ────────────────────────────────────────────────────
-const wrap = { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.paper, color: C.ink, padding: 24, maxWidth: 1080, margin: "0 auto", minHeight: "100%", display: "flex", flexDirection: "column" };
-const laneStrip = { height: 8, flex: "0 1 120px", minWidth: 60, borderRadius: 4, background: `repeating-linear-gradient(90deg, ${C.lane} 0 22px, transparent 22px 40px)` };
-const panel = { background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 18 };
-const howTo = { border: "1.5px solid", borderRadius: 12, padding: "12px 16px", marginBottom: 14, fontSize: 14, color: C.slate, lineHeight: 1.5 };
-const eyebrow = { fontSize: 12, color: C.fog, marginBottom: 4, fontWeight: 600 };
-const seatTag = { fontSize: 11, fontWeight: 700, color: C.slate, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 6, padding: "2px 7px" };
-const vehTag = { display: "flex", alignItems: "center", gap: 8, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 10, padding: "8px 10px" };
-const vehX = { width: 20, height: 20, borderRadius: "50%", border: `1px solid ${C.line}`, background: C.card, color: C.warn, fontSize: 14, lineHeight: 1, cursor: "pointer", fontWeight: 800 };
-const vehPick = { display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-start", padding: "8px 12px", borderRadius: 10, border: "1.5px solid", cursor: "pointer", textAlign: "left" };
-const tabRow = { display: "flex", gap: 4, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: 4 };
-const tabBtn = { border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" };
-const cal = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, background: C.line, border: `1px solid ${C.line}`, borderRadius: 12, padding: 6 };
-const wdHead = { textAlign: "center", fontSize: 12, fontWeight: 700, color: C.fog, padding: "6px 0" };
-const dayCell = { background: C.card, borderRadius: 8, minHeight: 96, padding: 7, display: "flex", flexDirection: "column", overflow: "hidden" };
-const pill = { color: "#fff", fontSize: 11, fontWeight: 600, padding: "2px 6px", borderRadius: 5, display: "flex", alignItems: "center", gap: 4, lineHeight: 1.3 };
-const miniTag = { fontSize: 11, opacity: 0.95, flexShrink: 0 };
-const miniTagInline = { fontSize: 12, opacity: 0.9 };
-const dot = { width: 10, height: 10, borderRadius: "50%", display: "inline-block", flexShrink: 0 };
-const gapDot = { width: 8, height: 8, borderRadius: "50%", background: C.warn, display: "inline-block" };
-const gapDotInline = { width: 8, height: 8, borderRadius: "50%", background: C.warn, display: "inline-block" };
-const input = { border: `1px solid ${C.line}`, borderRadius: 9, padding: "9px 12px", fontSize: 14, color: C.ink, background: C.card, fontFamily: "inherit" };
-const primaryBtn = { background: C.ink, color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
-const navBtn = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 9, padding: "7px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
-const navBtnSm = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer" };
-const chip = { display: "flex", alignItems: "center", gap: 7, padding: "6px 12px", borderRadius: 999, border: "1.5px solid", fontSize: 13, fontWeight: 700, cursor: "pointer" };
-const xBtn = { marginLeft: 4, width: 22, height: 22, borderRadius: "50%", border: `1px solid ${C.line}`, background: C.card, color: C.warn, fontSize: 15, lineHeight: 1, cursor: "pointer", fontWeight: 800 };
-const legendRow = { marginTop: 12, color: C.fog, fontSize: 12.5, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" };
-const coverRow = { display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", background: C.warnSoft, border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 14px", cursor: "pointer" };
-const mineRow = { display: "flex", alignItems: "center", gap: 10, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px" };
-const statusBtn = { border: "1px solid", borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" };
-const statusPill = { borderRadius: 999, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" };
-const editSmall = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" };
-const overlay = { position: "fixed", inset: 0, background: "rgba(28,34,48,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 };
-const modal = { background: C.card, borderRadius: 16, padding: 24, width: "100%", maxWidth: 460, boxShadow: "0 20px 50px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" };
-const fieldLabel = { display: "block", fontSize: 13, fontWeight: 700, color: C.slate, marginBottom: 6 };
-const legBox = { flex: 1, border: "1.5px solid", borderRadius: 12, padding: 12, cursor: "pointer" };
-const checkbox = { width: 20, height: 20, borderRadius: 6, border: "2px solid", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
-const typeBtn = { flex: 1, display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, border: "1.5px solid", cursor: "pointer", textAlign: "left" };
-const confirmToggle = { display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: "12px", border: `1px solid ${C.line}`, borderRadius: 10, background: C.paper };
-const removeBtn = { background: C.card, color: "#c15b47", border: "1px solid #e6c3bc", borderRadius: 9, padding: "9px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
-const ghostBtn = { background: C.card, color: C.fog, border: `1px solid ${C.line}`, borderRadius: 9, padding: "9px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+function makeStyles(C) {
+  const wrap = { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.paper, color: C.ink, padding: 24, maxWidth: 1080, margin: "0 auto", minHeight: "100%", display: "flex", flexDirection: "column" };
+  const laneStrip = { height: 8, flex: "0 1 120px", minWidth: 60, borderRadius: 4, background: `repeating-linear-gradient(90deg, ${C.lane} 0 22px, transparent 22px 40px)` };
+  const panel = { background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 18 };
+  const howTo = { border: "1.5px solid", borderRadius: 12, padding: "12px 16px", marginBottom: 14, fontSize: 14, color: C.slate, lineHeight: 1.5 };
+  const eyebrow = { fontSize: 12, color: C.fog, marginBottom: 4, fontWeight: 600 };
+  const seatTag = { fontSize: 11, fontWeight: 700, color: C.slate, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 6, padding: "2px 7px" };
+  const vehTag = { display: "flex", alignItems: "center", gap: 8, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 10, padding: "8px 10px" };
+  const vehX = { width: 20, height: 20, borderRadius: "50%", border: `1px solid ${C.line}`, background: C.card, color: C.warn, fontSize: 14, lineHeight: 1, cursor: "pointer", fontWeight: 800 };
+  const vehPick = { display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-start", padding: "8px 12px", borderRadius: 10, border: "1.5px solid", cursor: "pointer", textAlign: "left" };
+  const tabRow = { display: "flex", gap: 4, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: 4 };
+  const tabBtn = { border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" };
+  const cal = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, background: C.line, border: `1px solid ${C.line}`, borderRadius: 12, padding: 6 };
+  const wdHead = { textAlign: "center", fontSize: 12, fontWeight: 700, color: C.fog, padding: "6px 0" };
+  const dayCell = { background: C.card, borderRadius: 8, minHeight: 132, padding: 8, display: "flex", flexDirection: "column", overflow: "hidden" };
+  const pill = { color: "#fff", fontSize: 11.5, fontWeight: 600, padding: "3px 7px", borderRadius: 6, display: "flex", alignItems: "center", gap: 4, lineHeight: 1.35 };
+  const miniTag = { fontSize: 11, opacity: 0.95, flexShrink: 0 };
+  const miniTagInline = { fontSize: 12, opacity: 0.9 };
+  const dot = { width: 10, height: 10, borderRadius: "50%", display: "inline-block", flexShrink: 0 };
+  const gapDot = { width: 8, height: 8, borderRadius: "50%", background: C.warn, display: "inline-block" };
+  const gapDotInline = { width: 8, height: 8, borderRadius: "50%", background: C.warn, display: "inline-block" };
+  const input = { border: `1px solid ${C.line}`, borderRadius: 9, padding: "9px 12px", fontSize: 14, color: C.ink, background: C.card, fontFamily: "inherit" };
+  const primaryBtn = { background: C.brand, color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+  const navBtn = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 9, padding: "7px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+  const navBtnSm = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 700, cursor: "pointer" };
+  const chip = { display: "flex", alignItems: "center", gap: 7, padding: "6px 12px", borderRadius: 999, border: "1.5px solid", fontSize: 13, fontWeight: 700, cursor: "pointer" };
+  const xBtn = { marginLeft: 4, width: 22, height: 22, borderRadius: "50%", border: `1px solid ${C.line}`, background: C.card, color: C.warn, fontSize: 15, lineHeight: 1, cursor: "pointer", fontWeight: 800 };
+  const legendRow = { marginTop: 12, color: C.fog, fontSize: 12.5, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" };
+  const coverRow = { display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", background: C.warnSoft, border: `1px solid ${C.line}`, borderRadius: 10, padding: "12px 14px", cursor: "pointer" };
+  const mineRow = { display: "flex", alignItems: "center", gap: 10, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px" };
+  const statusBtn = { border: "1px solid", borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" };
+  const statusPill = { borderRadius: 999, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" };
+  const editSmall = { background: C.card, color: C.slate, border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 10px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" };
+  const overlay = { position: "fixed", inset: 0, background: "rgba(28,34,48,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 };
+  const modal = { background: C.card, borderRadius: 16, padding: 24, width: "100%", maxWidth: 460, boxShadow: "0 20px 50px rgba(0,0,0,0.25)", maxHeight: "90vh", overflowY: "auto" };
+  const fieldLabel = { display: "block", fontSize: 13, fontWeight: 700, color: C.slate, marginBottom: 6 };
+  const legBox = { flex: 1, border: "1.5px solid", borderRadius: 12, padding: 12, cursor: "pointer" };
+  const checkbox = { width: 20, height: 20, borderRadius: 6, border: "2px solid", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+  const typeBtn = { flex: 1, display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-start", padding: "10px 12px", borderRadius: 10, border: "1.5px solid", cursor: "pointer", textAlign: "left" };
+  const confirmToggle = { display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: "12px", border: `1px solid ${C.line}`, borderRadius: 10, background: C.paper };
+  const removeBtn = { background: C.card, color: "#c15b47", border: "1px solid #e6c3bc", borderRadius: 9, padding: "9px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+  const ghostBtn = { background: C.card, color: C.fog, border: `1px solid ${C.line}`, borderRadius: 9, padding: "9px 14px", fontSize: 14, fontWeight: 700, cursor: "pointer" };
+  return { wrap, laneStrip, panel, howTo, eyebrow, seatTag, vehTag, vehX, vehPick, tabRow, tabBtn, cal, wdHead, dayCell, pill, miniTag, miniTagInline, dot, gapDot, gapDotInline, input, primaryBtn, navBtn, navBtnSm, chip, xBtn, legendRow, coverRow, mineRow, statusBtn, statusPill, editSmall, overlay, modal, fieldLabel, legBox, checkbox, typeBtn, confirmToggle, removeBtn, ghostBtn };
+}
