@@ -13,7 +13,7 @@ create table if not exists carpool (
 
 -- 2. Seed the single shared row the app reads/writes.
 insert into carpool (id, payload)
-values ('main', '{"families":[],"shifts":[],"schoolDaysOnly":true}')
+values ('main', '{"families":[],"shifts":[],"schoolDaysOnly":true,"passwordOff":false}')
 on conflict (id) do nothing;
 
 -- 3. Turn on Row Level Security, then allow read + write.

@@ -1,6 +1,6 @@
-# The Carpool Lane
+# IVS Carpool — Ice Vision Solutions
 
-A shared carpool calendar for a small group of families. Everyone with the
+The Ice Vision Solutions carpool calendar. A shared calendar for a small group of families. Everyone with the
 link (and the shared password) sees the same month, and can sign up to drive
 pickup, dropoff, or both — for a single day or every week.
 
@@ -80,15 +80,23 @@ Your code is now on GitHub.
 
 ---
 
+
+## Your logo
+
+Your Ice Vision Solutions logo is already included at `public/logo.png` and
+shows in the header, the password screen, and the browser tab. To swap it
+later, replace that file with a new `logo.png` (a square image works best) and
+commit the change — Vercel redeploys automatically.
+
 ## The password
 
 The app asks for a shared password before showing the calendar. The default is:
 
-    carpool2026
+    esteem
 
 **To change it:** open `src/CarpoolApp.jsx`, find the line near the top:
 
-    const SHARED_PASSWORD = "carpool2026";
+    const SHARED_PASSWORD = "esteem";
 
 Change it to whatever you like, commit the change on GitHub (edit the file
 right in the browser — pencil icon → edit → Commit changes), and Vercel will
