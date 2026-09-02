@@ -27,6 +27,9 @@ const FAMILY_COLORS = [
   "#c98f16", "#3f9aa3", "#b0567f", "#6b7280",
 ];
 
+// Password required to CREATE a new carpool (not to join one). Change if needed.
+const CREATE_PASSWORD = "1234";
+
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const WD = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -53,22 +56,29 @@ export default function CarpoolApp() {
   const [mode, setMode] = useState("choose");         // choose | create | join
   const [cpNameInput, setCpNameInput] = useState("");
   const [cpPwInput, setCpPwInput] = useState("");
+  const [cpAdminInput, setCpAdminInput] = useState("");
   const [gateError, setGateError] = useState("");
   const [gateBusy, setGateBusy] = useState(false);
   const [remember, setRemember] = useState(true);
 
   // Try to auto-rejoin a remembered carpool on this device.
+  const [lastHint, setLastHint] = useState(null); // { name } shortcut for returning users
   useEffect(() => {
-    let saved = null;
+    let saved = null, hint = null;
     try { saved = JSON.parse(localStorage.getItem("ivs_carpool") || "null"); } catch {}
+    try { hint = JSON.parse(localStorage.getItem("ivs_last") || "null"); } catch {}
     if (saved && saved.id) {
       setCarpoolId(saved.id);
       setCarpoolName(saved.name || "");
+    } else if (hint && hint.name) {
+      setLastHint(hint);
     }
   }, []);
 
   const rememberCarpool = (id, name) => {
     try {
+      // Always remember the name as a quick-continue hint (not the password).
+      localStorage.setItem("ivs_last", JSON.stringify({ name }));
       if (remember) localStorage.setItem("ivs_carpool", JSON.stringify({ id, name }));
       else localStorage.removeItem("ivs_carpool");
     } catch {}
@@ -77,6 +87,7 @@ export default function CarpoolApp() {
   const createCarpool = async () => {
     const name = cpNameInput.trim();
     const pass = cpPwInput.trim();
+    if (cpAdminInput.trim() !== CREATE_PASSWORD) { setGateError("The admin password is incorrect."); return; }
     if (!name) { setGateError("Give your carpool a name."); return; }
     if (pass.length < 3) { setGateError("Choose a password (at least 3 characters)."); return; }
     const id = slugify(name);
@@ -150,7 +161,15 @@ export default function CarpoolApp() {
       const { data: row, error } = await supabase
         .from("carpool").select("payload").eq("id", carpoolId).maybeSingle();
       if (error) throw error;
-      if (row && row.payload) setData((prev) => ({ ...prev, ...row.payload }));
+      if (row && row.payload) {
+        setData((prev) => ({ ...prev, ...row.payload }));
+        if (row.payload.name) setCarpoolName(row.payload.name);
+      } else {
+        // Remembered carpool no longer exists — clear it and go back to choose.
+        try { localStorage.removeItem("ivs_carpool"); } catch {}
+        setCarpoolId(null); setCarpoolName(""); setMode("choose");
+        setGateError("That carpool couldn't be found anymore. Create or join one below.");
+      }
       setConnError(false);
     } catch (e) {
       console.error("Load failed:", e);
@@ -456,6 +475,13 @@ export default function CarpoolApp() {
 
           {mode === "choose" && (
             <>
+              {lastHint && lastHint.name && (
+                <div style={{ marginBottom: 16, padding: 12, background: C.goSoft, border: `1px solid ${C.go}`, borderRadius: 12 }}>
+                  <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 8 }}>Last time you were in <strong style={{ color: C.ink }}>{lastHint.name}</strong></div>
+                  <button onClick={() => { setMode("join"); setCpNameInput(lastHint.name); setGateError(""); }}
+                    style={{ ...S.primaryBtn, width: "100%", background: C.brand }}>Continue in {lastHint.name}</button>
+                </div>
+              )}
               <p style={{ color: C.fog, margin: "0 0 18px", fontSize: 14 }}>Start a new carpool for your group, or join one you were invited to.</p>
               <button onClick={() => { setMode("create"); setGateError(""); }} style={{ ...S.primaryBtn, width: "100%", background: C.go, marginBottom: 10 }}>Create a carpool</button>
               <button onClick={() => { setMode("join"); setGateError(""); }} style={{ ...S.ghostBtn, width: "100%", boxSizing: "border-box" }}>Join an existing carpool</button>
@@ -466,12 +492,22 @@ export default function CarpoolApp() {
             <>
               <p style={{ color: C.fog, margin: "0 0 16px", fontSize: 14 }}>
                 {mode === "create"
-                  ? "Name your carpool and set a password. You'll share both with your families."
+                  ? "Enter the admin password, then name your carpool and set a password to share with your families."
                   : "Enter the carpool name and password exactly as they were shared with you."}
               </p>
+              {mode === "create" && (
+                <div style={fieldWrap}>
+                  <label style={labelStyle}>Admin password</label>
+                  <input type="password" value={cpAdminInput}
+                    onChange={(e) => { setCpAdminInput(e.target.value); setGateError(""); }}
+                    onKeyDown={(e) => e.key === "Enter" && createCarpool()}
+                    placeholder="Admin password"
+                    style={{ ...S.input, width: "100%", boxSizing: "border-box" }} />
+                </div>
+              )}
               <div style={fieldWrap}>
                 <label style={labelStyle}>Carpool name</label>
-                <input type="text" value={cpNameInput} autoFocus
+                <input type="text" value={cpNameInput} autoFocus={mode === "join"}
                   onChange={(e) => { setCpNameInput(e.target.value); setGateError(""); }}
                   onKeyDown={(e) => e.key === "Enter" && (mode === "create" ? createCarpool() : joinCarpool())}
                   placeholder="e.g. Lincoln Elementary Group"
@@ -494,7 +530,7 @@ export default function CarpoolApp() {
                 style={{ ...S.primaryBtn, width: "100%", background: C.go, opacity: gateBusy ? 0.6 : 1 }}>
                 {gateBusy ? (mode === "create" ? "Creating…" : "Joining…") : (mode === "create" ? "Create & open" : "Join carpool")}
               </button>
-              <button onClick={() => { setMode("choose"); setGateError(""); setCpNameInput(""); setCpPwInput(""); }}
+              <button onClick={() => { setMode("choose"); setGateError(""); setCpNameInput(""); setCpPwInput(""); setCpAdminInput(""); }}
                 style={{ ...S.ghostBtn, width: "100%", marginTop: 8, boxSizing: "border-box" }}>← Back</button>
             </>
           )}
