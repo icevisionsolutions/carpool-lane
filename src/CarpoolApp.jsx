@@ -96,7 +96,7 @@ export default function CarpoolApp() {
     try {
       const { data: existing } = await supabase.from("carpool").select("id").eq("id", id).maybeSingle();
       if (existing) { setGateError("A carpool with that name already exists. Try Join, or pick a different name."); setGateBusy(false); return; }
-      const fresh = { name, password: pass, families: [], shifts: [], schoolDaysOnly: true };
+      const fresh = { name, password: pass, families: [], shifts: [], noRides: [], schoolDaysOnly: true };
       const { error } = await supabase.from("carpool").upsert({ id, payload: fresh, updated_at: new Date().toISOString() });
       if (error) throw error;
       setData(fresh); setCarpoolName(name); setCarpoolId(id);
@@ -129,14 +129,14 @@ export default function CarpoolApp() {
     try { localStorage.removeItem("ivs_carpool"); } catch {}
     setCarpoolId(null); setCarpoolName(""); setMode("choose");
     setCpNameInput(""); setCpPwInput(""); setGateError("");
-    setData({ families: [], shifts: [], schoolDaysOnly: true });
+    setData({ families: [], shifts: [], noRides: [], schoolDaysOnly: true });
     setMe(null); setLoaded(false);
   };
 
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [connError, setConnError] = useState(false);
-  const [data, setData] = useState({ families: [], shifts: [], schoolDaysOnly: true });
+  const [data, setData] = useState({ families: [], shifts: [], noRides: [], schoolDaysOnly: true });
   const [me, setMe] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [driverInput, setDriverInput] = useState("");
@@ -318,6 +318,30 @@ export default function CarpoolApp() {
   }, [data.shifts]);
   const myShiftOn = (dateStr) => shiftsOn(dateStr).find((s) => s.familyId === me);
 
+  // "No ride needed" markers — carpool-wide, single date or weekly weekday.
+  const noRideOn = useCallback((dateStr) => {
+    const wd = parse(dateStr).getDay();
+    return (data.noRides || []).find((n) =>
+      (n.type === "single" && n.date === dateStr) || (n.type === "weekly" && n.weekday === wd)
+    );
+  }, [data.noRides]);
+  const setNoRide = async (dateStr, kind) => {
+    const wd = parse(dateStr).getDay();
+    const entry = kind === "weekly" ? { id: uid(), type: "weekly", weekday: wd } : { id: uid(), type: "single", date: dateStr };
+    // Remove any existing marker covering this date, then add.
+    const kept = (data.noRides || []).filter((n) =>
+      !((n.type === "single" && n.date === dateStr) || (n.type === "weekly" && n.weekday === wd)));
+    await persist({ ...data, noRides: [...kept, entry] });
+    setEditDate(null); setViewDate(null);
+  };
+  const clearNoRide = async (dateStr) => {
+    const wd = parse(dateStr).getDay();
+    const kept = (data.noRides || []).filter((n) =>
+      !((n.type === "single" && n.date === dateStr) || (n.type === "weekly" && n.weekday === wd)));
+    await persist({ ...data, noRides: kept });
+    setEditDate(null); setViewDate(null);
+  };
+
   // ── Editor ─────────────────────────────────────────────────
   // Clicking a calendar date opens a read-only summary first.
   const openDay = (dateStr) => { setViewDate(dateStr); };
@@ -435,9 +459,10 @@ export default function CarpoolApp() {
   const isSchoolDay = (date) => { const d = date.getDay(); return d >= 1 && d <= 5; };
 
   const uncovered = useMemo(() => grid.filter(Boolean).filter((date) => {
+    if (noRideOn(ymd(date))) return false;
     if (data.schoolDaysOnly && !isSchoolDay(date)) return false;
     return shiftsOn(ymd(date)).length === 0;
-  }), [grid, data.schoolDaysOnly, shiftsOn]);
+  }), [grid, data.schoolDaysOnly, shiftsOn, noRideOn]);
 
   const myList = useMemo(() => {
     if (!me) return [];
@@ -814,10 +839,26 @@ export default function CarpoolApp() {
             {grid.map((date, i) => {
               if (!date) return <div key={i} style={{ ...S.dayCell, background: C.paper, cursor: "default" }} />;
               const ds = ymd(date);
+              const noRide = noRideOn(ds);
               const list = shiftsOn(ds);
               const mine = myShiftOn(ds);
               const isToday = ds === todayStr;
-              const gap = list.length === 0 && (!data.schoolDaysOnly || isSchoolDay(date));
+              const gap = !noRide && list.length === 0 && (!data.schoolDaysOnly || isSchoolDay(date));
+              if (noRide) {
+                return (
+                  <div key={i} className="cp-day" onClick={() => openDay(ds)}
+                    style={{ ...S.dayCell, background: dark ? "#0b1220" : "#eceef1", position: "relative" }}>
+                    <div className="cp-daynum" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontWeight: isToday ? 800 : 600, fontSize: 13, color: C.fog }}>{date.getDate()}</span>
+                      {noRide.type === "weekly" && <span style={{ fontSize: 11, color: C.fog }} title="Every week">↻</span>}
+                    </div>
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                      <span style={{ fontSize: 30, fontWeight: 900, color: dark ? "#5b6472" : "#1c2230", lineHeight: 1 }}>✕</span>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: C.fog, textAlign: "center" }}>No ride</span>
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div key={i} className="cp-day" onClick={() => openDay(ds)}
                   style={{ ...S.dayCell,
@@ -935,8 +976,10 @@ export default function CarpoolApp() {
 
       {/* Read-only day summary (opens first when you tap a date) */}
       {viewDate && !editDate && (() => {
+        const marker = noRideOn(viewDate);
         const list = shiftsOn(viewDate);
         const mineHere = list.find((s) => s.familyId === me);
+        const wdName = WD[parse(viewDate).getDay()];
         return (
           <div style={S.overlay} onClick={() => setViewDate(null)}>
             <div style={S.modal} onClick={(e) => e.stopPropagation()}>
@@ -950,65 +993,90 @@ export default function CarpoolApp() {
                 <button className="cp-btn" onClick={() => setViewDate(null)} style={S.xBtn} title="Close">×</button>
               </div>
 
-              <div style={{ margin: "16px 0" }}>
-                {list.length === 0 ? (
-                  <div style={{ background: C.warnSoft, border: `1px solid ${C.line}`, borderRadius: 10, padding: "14px 16px" }}>
-                    <div style={{ fontWeight: 700, color: C.warn }}>No driver yet</div>
-                    <p style={{ margin: "4px 0 0", color: C.fog, fontSize: 13 }}>Nobody has signed up for this day.</p>
+              {marker ? (
+                <div style={{ margin: "16px 0" }}>
+                  <div style={{ textAlign: "center", padding: "20px 12px", background: dark ? "#0b1220" : "#eceef1", borderRadius: 12 }}>
+                    <div style={{ fontSize: 40, fontWeight: 900, color: dark ? "#5b6472" : "#1c2230", lineHeight: 1 }}>✕</div>
+                    <div style={{ marginTop: 8, fontWeight: 800, color: C.ink }}>No ride needed</div>
+                    <p style={{ margin: "4px 0 0", color: C.fog, fontSize: 13 }}>
+                      {marker.type === "weekly" ? `No carpool every ${wdName}.` : "No carpool on this day."}
+                    </p>
                   </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {list.map((s) => {
-                      const fam = familyById(s.familyId);
-                      if (!fam) return null;
-                      const summary = legs(s);
-                      return (
-                        <div key={s.id} style={{ border: `1px solid ${C.line}`, borderLeft: `4px solid ${fam.color}`, borderRadius: 10, padding: "10px 12px", background: C.card }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <strong style={{ color: C.ink }}>{fam.family}</strong>
-                            {fam.driver && <span style={{ color: C.fog, fontSize: 13 }}>· {fam.driver}</span>}
-                            <span style={{ marginLeft: "auto", ...S.statusPill,
-                              background: s.confirmed ? C.goSoft : "#fff", color: s.confirmed ? C.go : C.tentative,
-                              border: `1px solid ${s.confirmed ? C.go : C.line}` }}>
-                              {s.confirmed ? "✓ Confirmed" : "Tentative"}
-                            </span>
-                          </div>
-                          <div style={{ marginTop: 6, fontSize: 13.5, color: C.slate, display: "flex", flexDirection: "column", gap: 3 }}>
-                            {!s.pickup && !s.dropoff && <span>No pickup/dropoff set</span>}
-                            {s.pickup && (
-                              <span><strong style={{ color: C.ink }}>Pickup</strong>{s.pickupTime ? ` · ${s.pickupTime}` : ""}{s.pickupLoc ? <span style={{ color: C.fog }}> — 📍 {s.pickupLoc}</span> : null}</span>
-                            )}
-                            {s.dropoff && (
-                              <span><strong style={{ color: C.ink }}>Dropoff</strong>{s.dropoffTime ? ` · ${s.dropoffTime}` : ""}{s.dropoffLoc ? <span style={{ color: C.fog }}> — 📍 {s.dropoffLoc}</span> : null}</span>
-                            )}
-                            {s.type === "weekly" && <span style={{ ...S.miniTagInline }} title="Repeats weekly">↻ weekly</span>}
-                          </div>
-                          {(() => { const v = vehicleById(fam, s.vehicleId); return v ? (
-                            <div style={{ marginTop: 4, fontSize: 13, color: C.fog }}>
-                              🚗 {v.name}{v.seats > 0 ? ` · ${v.seats} seats` : ""}
+                  <button className="cp-btn" onClick={() => clearNoRide(viewDate)} style={{ ...S.ghostBtn, width: "100%", marginTop: 12, boxSizing: "border-box" }}>
+                    Undo — allow rides again
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div style={{ margin: "16px 0" }}>
+                    {list.length === 0 ? (
+                      <div style={{ background: C.warnSoft, border: `1px solid ${C.line}`, borderRadius: 10, padding: "14px 16px" }}>
+                        <div style={{ fontWeight: 700, color: C.warn }}>No driver yet</div>
+                        <p style={{ margin: "4px 0 0", color: C.fog, fontSize: 13 }}>Nobody has signed up for this day.</p>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {list.map((s) => {
+                          const fam = familyById(s.familyId);
+                          if (!fam) return null;
+                          const summary = legs(s);
+                          return (
+                            <div key={s.id} style={{ border: `1px solid ${C.line}`, borderLeft: `4px solid ${fam.color}`, borderRadius: 10, padding: "10px 12px", background: C.card }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <strong style={{ color: C.ink }}>{fam.family}</strong>
+                                {fam.driver && <span style={{ color: C.fog, fontSize: 13 }}>· {fam.driver}</span>}
+                                <span style={{ marginLeft: "auto", ...S.statusPill,
+                                  background: s.confirmed ? C.goSoft : "#fff", color: s.confirmed ? C.go : C.tentative,
+                                  border: `1px solid ${s.confirmed ? C.go : C.line}` }}>
+                                  {s.confirmed ? "✓ Confirmed" : "Tentative"}
+                                </span>
+                              </div>
+                              <div style={{ marginTop: 6, fontSize: 13.5, color: C.slate, display: "flex", flexDirection: "column", gap: 3 }}>
+                                {!s.pickup && !s.dropoff && <span>No pickup/dropoff set</span>}
+                                {s.pickup && (
+                                  <span><strong style={{ color: C.ink }}>Pickup</strong>{s.pickupTime ? ` · ${s.pickupTime}` : ""}{s.pickupLoc ? <span style={{ color: C.fog }}> — 📍 {s.pickupLoc}</span> : null}</span>
+                                )}
+                                {s.dropoff && (
+                                  <span><strong style={{ color: C.ink }}>Dropoff</strong>{s.dropoffTime ? ` · ${s.dropoffTime}` : ""}{s.dropoffLoc ? <span style={{ color: C.fog }}> — 📍 {s.dropoffLoc}</span> : null}</span>
+                                )}
+                                {s.type === "weekly" && <span style={{ ...S.miniTagInline }} title="Repeats weekly">↻ weekly</span>}
+                              </div>
+                              {(() => { const v = vehicleById(fam, s.vehicleId); return v ? (
+                                <div style={{ marginTop: 4, fontSize: 13, color: C.fog }}>
+                                  🚗 {v.name}{v.seats > 0 ? ` · ${v.seats} seats` : ""}
+                                </div>
+                              ) : null; })()}
+                              {Array.isArray(s.riders) && s.riders.length > 0 && (
+                                <div style={{ marginTop: 4, fontSize: 13, color: C.slate }}>
+                                  🎒 {s.riders.map((rid) => {
+                                    const found = findMember(rid);
+                                    if (!found) return null;
+                                    return found.family.id === s.familyId ? found.member.name : `${found.member.name} (${found.family.family})`;
+                                  }).filter(Boolean).join(", ")}
+                                </div>
+                              )}
+                              {s.note && <div style={{ marginTop: 6, fontSize: 13, color: C.fog, fontStyle: "italic" }}>“{s.note}”</div>}
                             </div>
-                          ) : null; })()}
-                          {Array.isArray(s.riders) && s.riders.length > 0 && (
-                            <div style={{ marginTop: 4, fontSize: 13, color: C.slate }}>
-                              🎒 {s.riders.map((rid) => {
-                                const found = findMember(rid);
-                                if (!found) return null;
-                                // Label with family name when the rider isn't from the driving family
-                                return found.family.id === s.familyId ? found.member.name : `${found.member.name} (${found.family.family})`;
-                              }).filter(Boolean).join(", ")}
-                            </div>
-                          )}
-                          {s.note && <div style={{ marginTop: 6, fontSize: 13, color: C.fog, fontStyle: "italic" }}>“{s.note}”</div>}
-                        </div>
-                      );
-                    })}
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
 
-              <button className="cp-btn" onClick={() => openEditor(viewDate)} style={{ ...S.primaryBtn, width: "100%", background: C.go }}>
-                {!me ? "Pick your family to sign up" : mineHere ? "Edit my day" : "Add my day"}
-              </button>
+                  <button className="cp-btn" onClick={() => openEditor(viewDate)} style={{ ...S.primaryBtn, width: "100%", background: C.go }}>
+                    {!me ? "Pick your family to sign up" : mineHere ? "Edit my day" : "Add my day"}
+                  </button>
+
+                  {/* No-ride-needed controls (carpool-wide) */}
+                  <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+                    <div style={{ fontSize: 12.5, color: C.fog, marginBottom: 8, textAlign: "center" }}>Mark this day as no carpool for everyone:</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button className="cp-btn" onClick={() => setNoRide(viewDate, "single")} style={{ ...S.navBtnSm, flex: 1 }}>✕ Just this day</button>
+                      <button className="cp-btn" onClick={() => setNoRide(viewDate, "weekly")} style={{ ...S.navBtnSm, flex: 1 }}>✕ Every {wdName}</button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         );
