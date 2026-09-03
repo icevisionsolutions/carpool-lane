@@ -153,6 +153,9 @@ export default function CarpoolApp() {
   const [editDate, setEditDate] = useState(null);
   const [draft, setDraft] = useState(null);
   const [expandedFam, setExpandedFam] = useState(null); // which other family is expanded in the rider picker
+  const [scopeAsk, setScopeAsk] = useState(null); // { action, resolve } for the weekly all/day dialog
+  const askWeeklyScope = (action) => new Promise((resolve) => setScopeAsk({ action, resolve }));
+  const answerScope = (val) => { if (scopeAsk) scopeAsk.resolve(val); setScopeAsk(null); };
 
   // ── Shared state via Supabase (scoped to the active carpool) ─
   const load = useCallback(async () => {
@@ -307,10 +310,11 @@ export default function CarpoolApp() {
   // ── Shift lookups ──────────────────────────────────────────
   const shiftsOn = useCallback((dateStr) => {
     const wd = parse(dateStr).getDay();
-    return data.shifts.filter((s) =>
-      (s.type === "single" && s.date === dateStr) ||
-      (s.type === "weekly" && s.weekday === wd)
-    );
+    return data.shifts.filter((s) => {
+      if (s.type === "single") return s.date === dateStr;
+      if (s.type === "weekly") return s.weekday === wd && !(Array.isArray(s.exceptions) && s.exceptions.includes(dateStr));
+      return false;
+    });
   }, [data.shifts]);
   const myShiftOn = (dateStr) => shiftsOn(dateStr).find((s) => s.familyId === me);
 
@@ -325,40 +329,77 @@ export default function CarpoolApp() {
     setViewDate(null);
     setEditDate(dateStr);
     setExpandedFam(null);
-    setDraft(existing ? { ...existing, riders: existing.riders || [], pickupLoc: existing.pickupLoc || "", dropoffLoc: existing.dropoffLoc || "" }
-      : { type: "single", pickup: false, pickupTime: "", pickupLoc: "", dropoff: false, dropoffTime: "", dropoffLoc: "", note: "", confirmed: false, vehicleId: null, riders: [], weekday: wd });
+    setDraft(existing ? { ...existing, riders: existing.riders || [], pickupLoc: existing.pickupLoc || "", dropoffLoc: existing.dropoffLoc || "", origType: existing.type, origId: existing.id }
+      : { type: "single", pickup: false, pickupTime: "", pickupLoc: "", dropoff: false, dropoffTime: "", dropoffLoc: "", note: "", confirmed: false, vehicleId: null, riders: [], weekday: wd, origType: null, origId: null });
   };
   const setD = (patch) => setDraft((d) => ({ ...d, ...patch }));
   const clearMineFor = (dateStr, list) => {
-    const wd = parse(dateStr).getDay();
     return list.filter((s) => {
       if (s.familyId !== me) return true;
       if (s.type === "single" && s.date === dateStr) return false;
-      if (s.type === "weekly" && s.weekday === wd) return false;
-      return true;
+      return true; // weekly shifts are handled via the scope dialog, never bulk-cleared here
     });
   };
+  const buildBase = () => ({
+    id: uid(), familyId: me,
+    pickup: draft.pickup, pickupTime: draft.pickupTime.trim(), pickupLoc: (draft.pickupLoc || "").trim(),
+    dropoff: draft.dropoff, dropoffTime: draft.dropoffTime.trim(), dropoffLoc: (draft.dropoffLoc || "").trim(),
+    note: draft.note.trim(), confirmed: !!draft.confirmed, vehicleId: draft.vehicleId || null, riders: draft.riders || [],
+  });
+
+  // Add a skip-date to a weekly shift so it doesn't apply on that day.
+  const addExceptionTo = (shifts, weeklyId, dateStr) => shifts.map((s) =>
+    s.id === weeklyId ? { ...s, exceptions: Array.from(new Set([...(s.exceptions || []), dateStr])) } : s);
+
   const saveShift = async () => {
     if (!me || !editDate || !draft) return;
-    const kept = clearMineFor(editDate, data.shifts);
-    if (!draft.pickup && !draft.dropoff) {
-      await persist({ ...data, shifts: kept }); setEditDate(null); return;
-    }
     const wd = parse(editDate).getDay();
-    const base = {
-      id: uid(), familyId: me,
-      pickup: draft.pickup, pickupTime: draft.pickupTime.trim(), pickupLoc: (draft.pickupLoc || "").trim(),
-      dropoff: draft.dropoff, dropoffTime: draft.dropoffTime.trim(), dropoffLoc: (draft.dropoffLoc || "").trim(),
-      note: draft.note.trim(), confirmed: !!draft.confirmed, vehicleId: draft.vehicleId || null, riders: draft.riders || [],
-    };
+    const editingWeekly = draft.origType === "weekly" && draft.origId;
+
+    // Editing an existing weekly shift → ask scope.
+    if (editingWeekly) {
+      const scope = await askWeeklyScope("save");
+      if (scope === "cancel") return;
+      if (scope === "all") {
+        // Update the weekly shift in place (keep its exceptions & type/weekday).
+        if (!draft.pickup && !draft.dropoff) {
+          await persist({ ...data, shifts: data.shifts.filter((s) => s.id !== draft.origId) });
+        } else {
+          const updated = data.shifts.map((s) => s.id === draft.origId
+            ? { ...s, ...buildBase(), id: s.id, type: "weekly", weekday: s.weekday, exceptions: s.exceptions || [] } : s);
+          await persist({ ...data, shifts: updated });
+        }
+        setEditDate(null); return;
+      }
+      // scope === "day": skip this date on the weekly, add a one-off for today.
+      let shifts = addExceptionTo(data.shifts, draft.origId, editDate);
+      if (draft.pickup || draft.dropoff) shifts = [...shifts, { ...buildBase(), type: "single", date: editDate }];
+      await persist({ ...data, shifts });
+      setEditDate(null); return;
+    }
+
+    // Normal (single, or new) save.
+    const kept = clearMineFor(editDate, data.shifts);
+    if (!draft.pickup && !draft.dropoff) { await persist({ ...data, shifts: kept }); setEditDate(null); return; }
     const shift = draft.type === "weekly"
-      ? { ...base, type: "weekly", weekday: wd }
-      : { ...base, type: "single", date: editDate };
+      ? { ...buildBase(), type: "weekly", weekday: wd, exceptions: [] }
+      : { ...buildBase(), type: "single", date: editDate };
     await persist({ ...data, shifts: [...kept, shift] });
     setEditDate(null);
   };
+
   const removeMine = async () => {
-    if (!me || !editDate) return;
+    if (!me || !editDate || !draft) return;
+    if (draft.origType === "weekly" && draft.origId) {
+      const scope = await askWeeklyScope("remove");
+      if (scope === "cancel") return;
+      if (scope === "all") {
+        await persist({ ...data, shifts: data.shifts.filter((s) => s.id !== draft.origId) });
+      } else {
+        await persist({ ...data, shifts: addExceptionTo(data.shifts, draft.origId, editDate) });
+      }
+      setEditDate(null); return;
+    }
     await persist({ ...data, shifts: clearMineFor(editDate, data.shifts) });
     setEditDate(null);
   };
@@ -1135,6 +1176,29 @@ export default function CarpoolApp() {
                   Check pickup or dropoff to save. Saving with neither checked clears your slot for this day.
                 </p>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Weekly all/just-this-day dialog */}
+      {scopeAsk && (
+        <div style={{ ...S.overlay, zIndex: 60 }} onClick={() => answerScope("cancel")}>
+          <div style={{ ...S.modal, maxWidth: 400 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 6px", fontSize: 18, color: C.ink }}>
+              {scopeAsk.action === "remove" ? "Remove this weekly day" : "Change this weekly day"}
+            </h3>
+            <p style={{ margin: "0 0 18px", color: C.fog, fontSize: 14 }}>
+              This shift repeats every week. {scopeAsk.action === "remove" ? "Remove it from every week, or just skip this one day?" : "Apply your changes to every week, or just this one day?"}
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 20 }}>
+              <button className="cp-btn" onClick={() => answerScope("day")} style={{ ...S.primaryBtn, background: C.go, width: "100%" }}>
+                {scopeAsk.action === "remove" ? "Just this day" : "Just this day"}
+              </button>
+              <button className="cp-btn" onClick={() => answerScope("all")} style={{ ...S.removeBtn, width: "100%", boxSizing: "border-box" }}>
+                {scopeAsk.action === "remove" ? "Remove all weeks" : "Change all weeks"}
+              </button>
+              <button className="cp-btn" onClick={() => answerScope("cancel")} style={{ ...S.ghostBtn, width: "100%", boxSizing: "border-box" }}>Cancel</button>
             </div>
           </div>
         </div>
