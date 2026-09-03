@@ -327,6 +327,16 @@ export default function CarpoolApp() {
   }, [data.noRides]);
   const setNoRide = async (dateStr, kind) => {
     const wd = parse(dateStr).getDay();
+    if (kind === "weekly") {
+      // Don't let a weekly no-ride hide rides that exist on other weeks of this weekday.
+      const conflict = data.shifts.some((s) =>
+        (s.type === "weekly" && s.weekday === wd) ||
+        (s.type === "single" && parse(s.date).getDay() === wd));
+      if (conflict) {
+        alert(`Some ${WD[wd]}s already have driving days scheduled. Remove those first, or use “Just this day” instead.`);
+        return;
+      }
+    }
     const entry = kind === "weekly" ? { id: uid(), type: "weekly", weekday: wd } : { id: uid(), type: "single", date: dateStr };
     // Remove any existing marker covering this date, then add.
     const kept = (data.noRides || []).filter((n) =>
@@ -1067,14 +1077,20 @@ export default function CarpoolApp() {
                     {!me ? "Pick your family to sign up" : mineHere ? "Edit my day" : "Add my day"}
                   </button>
 
-                  {/* No-ride-needed controls (carpool-wide) */}
-                  <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
-                    <div style={{ fontSize: 12.5, color: C.fog, marginBottom: 8, textAlign: "center" }}>Mark this day as no carpool for everyone:</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button className="cp-btn" onClick={() => setNoRide(viewDate, "single")} style={{ ...S.navBtnSm, flex: 1 }}>✕ Just this day</button>
-                      <button className="cp-btn" onClick={() => setNoRide(viewDate, "weekly")} style={{ ...S.navBtnSm, flex: 1 }}>✕ Every {wdName}</button>
+                  {/* No-ride-needed controls — only when nothing is scheduled yet */}
+                  {list.length === 0 ? (
+                    <div style={{ marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+                      <div style={{ fontSize: 12.5, color: C.fog, marginBottom: 8, textAlign: "center" }}>Or mark this day as no carpool for everyone:</div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="cp-btn" onClick={() => setNoRide(viewDate, "single")} style={{ ...S.navBtnSm, flex: 1 }}>✕ Just this day</button>
+                        <button className="cp-btn" onClick={() => setNoRide(viewDate, "weekly")} style={{ ...S.navBtnSm, flex: 1 }}>✕ Every {wdName}</button>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <p style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}`, fontSize: 12, color: C.fog, textAlign: "center" }}>
+                      To mark this day “no ride needed,” first remove the driving days above.
+                    </p>
+                  )}
                 </>
               )}
             </div>
